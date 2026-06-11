@@ -10,7 +10,9 @@ import dev.qi.torsionbalance.camera.PreviewCoordinateMapper
 import dev.qi.torsionbalance.data.CalibrationStore
 import dev.qi.torsionbalance.data.ExperimentFileInfo
 import dev.qi.torsionbalance.data.ExperimentRecorder
+import dev.qi.torsionbalance.vision.FlashDetector
 import dev.qi.torsionbalance.vision.MarkerTracker
+import dev.qi.torsionbalance.vision.RoiMath
 import dev.qi.torsionbalance.vision.YPlaneMat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +35,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val cameraController = CameraController(application)
 
     private val tracker = MarkerTracker()
+    private val flashDetector = FlashDetector()
 
     private val _calibration = MutableStateFlow(CalibrationState())
     val calibration: StateFlow<CalibrationState> = _calibration.asStateFlow()
@@ -70,6 +73,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _loupe = MutableStateFlow<LoupeView?>(null)
     val loupe: StateFlow<LoupeView?> = _loupe.asStateFlow()
 
+    private val _settingFlashRoi = MutableStateFlow(false)
+    val settingFlashRoi: StateFlow<Boolean> = _settingFlashRoi.asStateFlow()
+
     var scaleKnownMm: Double = 10.0
     private var signBaselineXRel: Double? = null
 
@@ -89,6 +95,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             calibrationStore.calibrationFlow.collect { state ->
                 _calibration.value = state
                 tracker.setKalmanParams(state.kalmanProcessNoise, state.kalmanMeasurementNoise)
+                flashDetector.threshold = state.flashThreshold.toDouble()
             }
         }
         refreshExperiments()
@@ -162,6 +169,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             blobAreaMax = cal.blobAreaMax,
             timestampMs = timestampMs,
         )
+
+        if (cal.flashAutoMark && recorder.isRecording && cal.flashRoiX >= 0) {
+            val roi = RoiMath.clampRoi(
+                gray,
+                cal.flashRoiX.toFloat(),
+                cal.flashRoiY.toFloat(),
+                FlashDetector.ROI_HALF,
+                FlashDetector.ROI_HALF,
+            )
+            if (flashDetector.processFrame(gray, roi, recorder.currentTimestampMs())) {
+                recorder.writeMark("auto_spark")
+                _statusMessage.value = "Spark detected — MARK written"
+            }
+        }
+
         gray.release()
         _tracking.value = result
 
@@ -255,9 +277,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _statusMessage.value = "Tap registered — detecting marker…"
 
         viewModelScope.launch {
-            when (_calibrationStep.value) {
-                CalibrationStep.TAP_ARM -> handleTapArm(tapX, tapY)
-                CalibrationStep.TAP_REFERENCE -> handleTapReference(tapX, tapY)
+            when {
+                _settingFlashRoi.value -> handleFlashRoiTap(tapX, tapY)
+                _calibrationStep.value == CalibrationStep.TAP_ARM -> handleTapArm(tapX, tapY)
+                _calibrationStep.value == CalibrationStep.TAP_REFERENCE -> handleTapReference(tapX, tapY)
                 else -> Unit
             }
         }
@@ -466,6 +489,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         lastSampleEmitMs = 0L
         resetMaxDeflection()
+        flashDetector.reset()
         recorder.start(name)
         _appMode.value = AppMode.RECORDING
         _recordingSampleCount.value = 0
@@ -487,6 +511,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         recorder.writeMark(note)
         _statusMessage.value = "MARK event written"
+    }
+
+    fun armFlashRoiTap() {
+        _settingFlashRoi.value = true
+        _statusMessage.value = "Tap the LED position in the preview"
+    }
+
+    private suspend fun handleFlashRoiTap(tapX: Float, tapY: Float) {
+        _settingFlashRoi.value = false
+        calibrationStore.update { it.copy(flashRoiX = tapX.toInt(), flashRoiY = tapY.toInt()) }
+        flashDetector.reset()
+        _statusMessage.value = "LED flash region set"
+    }
+
+    fun updateFlashSettings(enabled: Boolean, threshold: Int) {
+        viewModelScope.launch {
+            calibrationStore.update { it.copy(flashAutoMark = enabled, flashThreshold = threshold) }
+            flashDetector.threshold = threshold.toDouble()
+        }
     }
 
     fun refreshExperiments() {
@@ -613,7 +656,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        /** Side length, in image pixels, of the square frame crop shown in the magnifier loupe. */
         const val LOUPE_ROI_PX = 64
     }
 }

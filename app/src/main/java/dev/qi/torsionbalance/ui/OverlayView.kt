@@ -7,11 +7,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import dev.qi.torsionbalance.AppMode
+import dev.qi.torsionbalance.vision.FlashDetector
 import dev.qi.torsionbalance.CalibrationState
 import dev.qi.torsionbalance.Point2D
 import dev.qi.torsionbalance.ScaleCalibrationOverlay
@@ -31,7 +33,8 @@ fun TrackingOverlay(
     scaleDragPreview: Point2D? = null,
 ) {
     if (viewWidthPx <= 0f || viewHeightPx <= 0f) return
-    if (tracking == null && appMode != AppMode.CALIBRATE) return
+    val hasFlashRoi = calibration.flashRoiX >= 0
+    if (tracking == null && appMode != AppMode.CALIBRATE && !hasFlashRoi) return
 
     val imageWidth = tracking?.imageWidth?.takeIf { it > 0 } ?: 1280
     val imageHeight = tracking?.imageHeight?.takeIf { it > 0 } ?: 720
@@ -128,6 +131,30 @@ fun TrackingOverlay(
                     pathEffect = PathEffect.dashPathEffect(floatArrayOf(16f, 10f)),
                 )
             }
+        }
+
+        if (hasFlashRoi) {
+            val half = FlashDetector.ROI_HALF.toFloat()
+            val (fx, fy) = mapper.imageToView(calibration.flashRoiX.toFloat(), calibration.flashRoiY.toFloat())
+            val (fLeft, fTop) = mapper.imageToView(
+                calibration.flashRoiX.toFloat() - half,
+                calibration.flashRoiY.toFloat() - half,
+            )
+            val (fRight, fBottom) = mapper.imageToView(
+                calibration.flashRoiX.toFloat() + half,
+                calibration.flashRoiY.toFloat() + half,
+            )
+            val flashColor = Color(0xFFFFD600)
+            drawRect(
+                color = flashColor,
+                topLeft = Offset(fLeft, fTop),
+                size = Size(fRight - fLeft, fBottom - fTop),
+                style = Stroke(
+                    width = 2f,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f)),
+                ),
+            )
+            drawCircle(flashColor, radius = 4f, center = Offset(fx, fy))
         }
 
         if (tr != null && tr.reference.found) {

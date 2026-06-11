@@ -65,6 +65,7 @@ fun MainScreen(
     val maxDeflection by viewModel.maxDeflectionMm.collectAsState()
     val scaleOverlay by viewModel.scaleOverlay.collectAsState()
     val loupe by viewModel.loupe.collectAsState()
+    val settingFlashRoi by viewModel.settingFlashRoi.collectAsState()
 
     var showRecordDialog by remember { mutableStateOf(false) }
     var experimentName by remember { mutableStateOf("run_01") }
@@ -101,8 +102,8 @@ fun MainScreen(
                         overlayWidthPx = it.width.toFloat().coerceAtLeast(1f)
                         overlayHeightPx = it.height.toFloat().coerceAtLeast(1f)
                     }
-                    .pointerInput(appMode, calStep, overlayWidthPx, overlayHeightPx) {
-                        if (appMode != AppMode.CALIBRATE) return@pointerInput
+                    .pointerInput(appMode, calStep, settingFlashRoi, overlayWidthPx, overlayHeightPx) {
+                        if (appMode != AppMode.CALIBRATE && !settingFlashRoi) return@pointerInput
                         when (calStep) {
                             CalibrationStep.SET_SCALE_FIRST_POINT,
                             CalibrationStep.SET_SCALE_SECOND_POINT,
@@ -242,7 +243,16 @@ fun MainScreen(
                 )
             }
 
-            if (status.isNotBlank() || appMode == AppMode.CALIBRATE) {
+            if (settingFlashRoi) {
+                Text(
+                    text = "Tap the LED location in the preview",
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .background(Color(0xFFE65100).copy(alpha = 0.85f))
+                        .padding(8.dp),
+                    color = Color.White,
+                )
+            } else if (status.isNotBlank() || appMode == AppMode.CALIBRATE) {
                 Text(
                     text = status.ifBlank { calStep.name },
                     modifier = Modifier

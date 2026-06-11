@@ -95,6 +95,10 @@ data class CalibrationState(
     val sampleRate: SampleRate = SampleRate.EVERY_FRAME,
     val kalmanProcessNoise: Double = dev.qi.torsionbalance.vision.KalmanFilter1D.DEFAULT_PROCESS_NOISE,
     val kalmanMeasurementNoise: Double = dev.qi.torsionbalance.vision.KalmanFilter1D.DEFAULT_MEASUREMENT_NOISE,
+    val flashAutoMark: Boolean = false,
+    val flashRoiX: Int = -1,
+    val flashRoiY: Int = -1,
+    val flashThreshold: Int = 40,
 )
 
 data class ExperimentSummary(

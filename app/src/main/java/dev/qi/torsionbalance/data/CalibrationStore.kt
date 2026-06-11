@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.qi.torsionbalance.CalibrationState
@@ -35,6 +36,10 @@ class CalibrationStore(private val context: Context) {
         val SAMPLE_RATE = stringPreferencesKey("sample_rate")
         val KALMAN_PROCESS_NOISE = doublePreferencesKey("kalman_process_noise")
         val KALMAN_MEASUREMENT_NOISE = doublePreferencesKey("kalman_measurement_noise")
+        val FLASH_AUTO_MARK = booleanPreferencesKey("flash_auto_mark")
+        val FLASH_ROI_X = intPreferencesKey("flash_roi_x")
+        val FLASH_ROI_Y = intPreferencesKey("flash_roi_y")
+        val FLASH_THRESHOLD = intPreferencesKey("flash_threshold")
     }
 
     val calibrationFlow: Flow<CalibrationState> = context.dataStore.data.map { prefs ->
@@ -71,6 +76,10 @@ class CalibrationStore(private val context: Context) {
             } ?: SampleRate.EVERY_FRAME,
             kalmanProcessNoise = prefs[Keys.KALMAN_PROCESS_NOISE] ?: KalmanFilter1D.DEFAULT_PROCESS_NOISE,
             kalmanMeasurementNoise = prefs[Keys.KALMAN_MEASUREMENT_NOISE] ?: KalmanFilter1D.DEFAULT_MEASUREMENT_NOISE,
+            flashAutoMark = prefs[Keys.FLASH_AUTO_MARK] ?: false,
+            flashRoiX = prefs[Keys.FLASH_ROI_X] ?: -1,
+            flashRoiY = prefs[Keys.FLASH_ROI_Y] ?: -1,
+            flashThreshold = prefs[Keys.FLASH_THRESHOLD] ?: 40,
         )
     }
 
@@ -90,5 +99,9 @@ class CalibrationStore(private val context: Context) {
         prefs[Keys.SAMPLE_RATE] = next.sampleRate.name
         prefs[Keys.KALMAN_PROCESS_NOISE] = next.kalmanProcessNoise
         prefs[Keys.KALMAN_MEASUREMENT_NOISE] = next.kalmanMeasurementNoise
+        prefs[Keys.FLASH_AUTO_MARK] = next.flashAutoMark
+        prefs[Keys.FLASH_ROI_X] = next.flashRoiX
+        prefs[Keys.FLASH_ROI_Y] = next.flashRoiY
+        prefs[Keys.FLASH_THRESHOLD] = next.flashThreshold
     }
 }

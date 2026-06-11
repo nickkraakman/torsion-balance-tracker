@@ -1,6 +1,7 @@
 package dev.qi.torsionbalance.ui
 
 import android.content.Intent
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +15,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -64,6 +66,13 @@ fun SettingsScreen(
     LaunchedEffect(calibration.kalmanProcessNoise, calibration.kalmanMeasurementNoise) {
         kalmanProcessLog = log10(calibration.kalmanProcessNoise.coerceAtLeast(1e-6)).toFloat()
         kalmanMeasLog = log10(calibration.kalmanMeasurementNoise.coerceAtLeast(1e-6)).toFloat()
+    }
+
+    var flashEnabled by remember { mutableStateOf(calibration.flashAutoMark) }
+    var flashThreshold by remember { mutableStateOf(calibration.flashThreshold.toFloat()) }
+    LaunchedEffect(calibration.flashAutoMark, calibration.flashThreshold) {
+        flashEnabled = calibration.flashAutoMark
+        flashThreshold = calibration.flashThreshold.toFloat()
     }
 
     Scaffold(
@@ -143,6 +152,44 @@ fun SettingsScreen(
             Slider(value = blobMax, onValueChange = { blobMax = it }, valueRange = 500f..20000f)
             Button(onClick = { viewModel.updateBlobAreas(blobMin.toDouble(), blobMax.toDouble()) }) {
                 Text("Apply blob filters")
+            }
+
+            Text("Spark discharge auto-MARK", modifier = Modifier.padding(top = 16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = flashEnabled,
+                    onCheckedChange = { flashEnabled = it },
+                )
+                Text(
+                    if (flashEnabled) "Enabled" else "Disabled",
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            Text("Flash threshold (luma counts): ${flashThreshold.toInt()}")
+            Slider(
+                value = flashThreshold,
+                onValueChange = { flashThreshold = it },
+                valueRange = 10f..120f,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    viewModel.updateFlashSettings(flashEnabled, flashThreshold.toInt())
+                }) { Text("Apply flash settings") }
+                Button(onClick = {
+                    viewModel.armFlashRoiTap()
+                    onBack()
+                }) { Text("Set LED region") }
+            }
+            if (calibration.flashRoiX >= 0) {
+                Text(
+                    "LED region: (${calibration.flashRoiX}, ${calibration.flashRoiY})",
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            } else {
+                Text(
+                    "LED region: not set",
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
 
             Button(
