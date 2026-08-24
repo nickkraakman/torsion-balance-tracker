@@ -10,8 +10,6 @@ Android app that measures torsion-balance beam motion with OpenCV. It tracks a b
 4. Mount the phone on a tripod, camera pointing at the beam.
 5. Use stable, diffuse lighting.
 
-Optional: if you will fire more than once per experiment, put a spark-detector LED in the frame (inside or outside the chamber). A short wire antenna picks up the discharge EMP; an envelope detector and 555 stretch the pulse to ~110 ms so the camera can see it. The circuit is battery-powered and isolated from both the HV circuit and the phone. See [docs/spark-detector.md](docs/spark-detector.md).
-
 ## Using the app
 
 1. Open **Torsion Balance**.
