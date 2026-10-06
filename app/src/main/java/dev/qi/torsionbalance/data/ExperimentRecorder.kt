@@ -248,3 +248,12 @@ class ExperimentRecorder(private val context: Context) {
         }
     }
 }
+
+data class ExperimentFileInfo(
+    val name: String,
+    val fileName: String,
+    val absolutePath: String,
+    val sampleCount: Int,
+    val durationMs: Long,
+    val createdAtMs: Long,
+)
