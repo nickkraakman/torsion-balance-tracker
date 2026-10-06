@@ -2,6 +2,7 @@ name: Android CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -17,12 +18,43 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      # ubuntu-latest already ships an Android SDK at $ANDROID_HOME.
+      # Avoid android-actions/setup-android: its default package list still
+      # requests the removed legacy "tools" package (sdkmanager exit 1).
+      - name: Accept licenses and install SDK packages
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          set -euo pipefail
+          : "${ANDROID_HOME:?ANDROID_HOME not set on runner}"
+          echo "Using Android SDK at ${ANDROID_HOME}"
+          mkdir -p "${ANDROID_HOME}/licenses"
+          printf '%s\n' \
+            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+            > "${ANDROID_HOME}/licenses/android-sdk-license"
+          printf '%s\n' \
+            "84831b9409646a918e30573bab4c9c91346d8abd" \
+            > "${ANDROID_HOME}/licenses/android-sdk-preview-license"
+          # Prefer cmdline-tools sdkmanager when present; fall back to PATH.
+          if [ -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          elif command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          else
+            # Install cmdline-tools into the preinstalled SDK root if missing.
+            curl -fsSL -o /tmp/cmdtools.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            mkdir -p "${ANDROID_HOME}/cmdline-tools"
+            unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+            rm -rf "${ANDROID_HOME}/cmdline-tools/latest"
+            mv /tmp/cmdtools/cmdline-tools "${ANDROID_HOME}/cmdline-tools/latest"
+            SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "${SDKMANAGER}" --sdk_root="${ANDROID_HOME}" --licenses >/dev/null || true
+          "${SDKMANAGER}" --sdk_root="${ANDROID_HOME}" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "platform-tools"
 
       - name: Unit tests and debug APK
         run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
