@@ -1,8 +1,17 @@
-# Spark-Gap Discharge Detector
+# Spark-Gap Discharge Detector (legacy)
+
+> **Legacy hardware.** The current setup lights a trigger LED for as long as the spark
+> button is held; the app logs on/off duration (see [trigger-led.md](trigger-led.md)).
+> This page describes an older 555 monostable that stretched each RF-detected discharge
+> into a ~110 ms pulse so the camera could mark *individual* sparks.
 
 Generates a ~110 ms LED flash for each spark-gap discharge, visible to the torsion-balance camera.
-The app's **Auto-MARK on LED flash** feature (Settings) detects this flash and writes a timestamped
-`event` row in the CSV — frame-accurate, on the same timeline as the displacement samples.
+
+**App behaviour change:** the historical `SYNC` / `auto_spark` MARK rows are gone. With
+**Trigger LED logging** enabled, each ~110 ms flash is logged as a short `LED_ON` /
+`LED_OFF` pair (and `led_on=1` on intervening sample rows), not as a SYNC mark. For
+spark counting from on-time, prefer the button-held trigger LED described in
+[trigger-led.md](trigger-led.md).
 
 ## Why not audio?
 

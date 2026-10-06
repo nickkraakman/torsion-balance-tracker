@@ -66,6 +66,7 @@ fun MainScreen(
     val scaleOverlay by viewModel.scaleOverlay.collectAsState()
     val loupe by viewModel.loupe.collectAsState()
     val settingFlashRoi by viewModel.settingFlashRoi.collectAsState()
+    val ledMonitor by viewModel.ledMonitor.collectAsState()
 
     var showRecordDialog by remember { mutableStateOf(false) }
     var experimentName by remember { mutableStateOf("run_01") }
@@ -168,6 +169,7 @@ fun MainScreen(
                     appMode = appMode,
                     scaleOverlay = scaleOverlay,
                     scaleDragPreview = scaleDragPreview,
+                    ledMonitor = ledMonitor,
                 )
 
                 LoupeOverlay(
@@ -238,6 +240,17 @@ fun MainScreen(
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
                         .background(Color(0xFFB71C1C).copy(alpha = 0.85f))
+                        .padding(8.dp),
+                    color = Color.White,
+                )
+            }
+
+            if (ledMonitor.longHoldWarning) {
+                Text(
+                    text = "LED held >${ledMonitor.holdMs / 1000}s — check threshold / AE lock",
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .background(Color(0xFFB71C1C).copy(alpha = 0.9f))
                         .padding(8.dp),
                     color = Color.White,
                 )

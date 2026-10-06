@@ -101,6 +101,19 @@ data class CalibrationState(
     val flashThreshold: Int = 40,
 )
 
+/** Live trigger-LED ROI readout for threshold tuning. */
+data class LedMonitorState(
+    val mean: Double = 0.0,
+    val baseline: Double = 0.0,
+    val delta: Double = 0.0,
+    val ledOn: Boolean = false,
+    val roiSet: Boolean = false,
+    /** Continuous ON duration in ms (0 when off). */
+    val holdMs: Long = 0L,
+    /** True when the LED has been on longer than [dev.qi.torsionbalance.data.TriggerRunAccumulator.DEFAULT_SUSPICIOUS_HOLD_MS]. */
+    val longHoldWarning: Boolean = false,
+)
+
 data class ExperimentSummary(
     val name: String,
     val fileName: String,
