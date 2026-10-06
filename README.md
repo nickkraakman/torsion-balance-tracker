@@ -18,7 +18,7 @@ Android app that measures torsion-balance beam motion with OpenCV. It tracks a b
 3. For spark runs: Settings → set the LED region (LED off) → enable **Trigger LED logging**.
 4. Tap **Record** to start logging an experiment as CSV.
 5. Tap **Stop** to end the run.
-6. Tap **Share** under the experiment to export the data.
+6. Tap **Share** under the experiment to export the CSV (and `*.trigger.json` sidecar when present).
 
 ### Sparks per run
 
@@ -28,13 +28,13 @@ The camera cannot resolve individual sparks (~67/s). Estimate from LED-on time:
 sparks ≈ firing_rate_hz × total_led_on_ms / 1000
 ```
 
-`total_led_on_ms` is in the CSV `#` footer and in the `*.trigger.json` sidecar.
+`total_led_on_ms` is in `LED_SUMMARY` event rows at the end of the CSV and in the `*.trigger.json` sidecar.
 
 ### CSV notes
 
-Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header; `#` footer lines and `.trigger.json` files are new. Manual MARK events are still `flags=SYNC`. Trigger edges are `LED_ON` / `LED_OFF`. Details: [docs/trigger-led.md](docs/trigger-led.md).
+Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` footer — those break pandas/Excel/R). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF`. Details: [docs/trigger-led.md](docs/trigger-led.md).
 
-The older 555 per-spark flash circuit is [legacy](docs/spark-detector.md).
+The older 555 per-spark flash circuit is [legacy](docs/spark-detector.md): with logging enabled it now yields short `LED_ON`/`LED_OFF` pairs instead of `SYNC auto_spark`.
 
 ## Build
 
@@ -44,5 +44,7 @@ Requires Android Studio (or SDK + JDK 17–24) and Android SDK API 34.
 ./gradlew assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+`gradle.properties` no longer pins a machine-local JDK path. If your default Java is outside JDK 17–24, set `org.gradle.java.home` in `~/.gradle/gradle.properties` (or export `JAVA_HOME`) to a JDK 17 or 21 install.
 
 Install the APK on the phone, enable **Install unknown apps**, and grant **Camera** permission on first launch.

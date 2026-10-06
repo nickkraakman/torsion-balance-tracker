@@ -245,6 +245,17 @@ fun MainScreen(
                 )
             }
 
+            if (ledMonitor.longHoldWarning) {
+                Text(
+                    text = "LED held >${ledMonitor.holdMs / 1000}s — check threshold / AE lock",
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .background(Color(0xFFB71C1C).copy(alpha = 0.9f))
+                        .padding(8.dp),
+                    color = Color.White,
+                )
+            }
+
             if (settingFlashRoi) {
                 Text(
                     text = "Tap the LED location in the preview",

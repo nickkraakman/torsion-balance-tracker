@@ -2,6 +2,7 @@ package dev.qi.torsionbalance
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.camera.core.ImageProxy
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +11,7 @@ import dev.qi.torsionbalance.camera.PreviewCoordinateMapper
 import dev.qi.torsionbalance.data.CalibrationStore
 import dev.qi.torsionbalance.data.ExperimentFileInfo
 import dev.qi.torsionbalance.data.ExperimentRecorder
+import dev.qi.torsionbalance.data.TriggerRunAccumulator
 import dev.qi.torsionbalance.vision.FlashDetector
 import dev.qi.torsionbalance.vision.LedEdge
 import dev.qi.torsionbalance.vision.LedObservation
@@ -95,6 +97,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var trackerRestoredFromStore = false
 
+    /** ElapsedRealtime when the live LED last transitioned to ON (null when off). */
+    private var ledOnSinceElapsedMs: Long? = null
+
     init {
         viewModelScope.launch {
             calibrationStore.calibrationFlow.collect { state ->
@@ -161,11 +166,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         maybeRestoreTrackerFromStore(cal, gray)
 
-        val timestampMs = if (recorder.isRecording) {
+        val captureTs = if (recorder.isRecording) {
             recorder.timestampMsForCapture(captureNs)
         } else {
-            0L
+            null
         }
+        val timestampMs = captureTs?.timestampMs ?: 0L
 
         val result = tracker.processFrame(
             gray = gray,
@@ -188,16 +194,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        if (mode == AppMode.RECORDING && recorder.isRecording) {
+        if (mode == AppMode.RECORDING && recorder.isRecording && captureTs != null) {
             val ledLogging = cal.flashAutoMark && cal.flashRoiX >= 0
             val ledOn = if (ledLogging) ledObs?.ledOn else null
             val ledEdge = if (ledLogging) (ledObs?.edge ?: LedEdge.NONE) else LedEdge.NONE
+            val hadOpenHold = recorder.hasOpenHold()
             val frameIndex = recorder.noteProcessedFrame(
                 timestampMs = timestampMs,
                 captureNs = captureNs,
                 ledLogging = ledLogging,
                 ledOn = ledOn,
                 ledEdge = ledEdge,
+                usedCaptureFallback = captureTs.usedFallback,
             )
             if (ledLogging && ledObs != null) {
                 recorder.writeLedEdgeIfNeeded(
@@ -206,6 +214,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ledOn = ledObs.ledOn,
                     edge = ledObs.edge,
                     isFirstRecordedFrame = frameIndex == 0L,
+                    hadOpenHoldBeforeFrame = hadOpenHold,
                 )
             }
             // LED state must be on every processed frame; sample-rate thinning would drop edges.
@@ -221,6 +230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun processLedRoi(gray: Mat, cal: CalibrationState): LedObservation? {
         if (cal.flashRoiX < 0) {
+            ledOnSinceElapsedMs = null
             _ledMonitor.value = LedMonitorState()
             return null
         }
@@ -232,13 +242,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             FlashDetector.ROI_HALF,
         )
         val obs = flashDetector.processFrame(gray, roi)
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (obs.ledOn) {
+            if (ledOnSinceElapsedMs == null) ledOnSinceElapsedMs = nowElapsed
+        } else {
+            ledOnSinceElapsedMs = null
+        }
+        val holdMs = ledOnSinceElapsedMs?.let { nowElapsed - it } ?: 0L
+        val longHold = holdMs >= TriggerRunAccumulator.DEFAULT_SUSPICIOUS_HOLD_MS
         _ledMonitor.value = LedMonitorState(
             mean = obs.mean,
             baseline = obs.baseline,
             delta = obs.delta,
             ledOn = obs.ledOn,
             roiSet = true,
+            holdMs = holdMs,
+            longHoldWarning = longHold,
         )
+        if (longHold && !_statusMessage.value.contains("LED on >")) {
+            _statusMessage.value =
+                "LED on >${TriggerRunAccumulator.DEFAULT_SUSPICIOUS_HOLD_MS / 1000}s — " +
+                    "check threshold / AE lock (stuck ON risk)"
+        }
         return obs
     }
 

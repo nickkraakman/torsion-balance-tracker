@@ -1,7 +1,6 @@
 package dev.qi.torsionbalance.data
 
 import android.content.Context
-import android.os.SystemClock
 import dev.qi.torsionbalance.TrackingResult
 import dev.qi.torsionbalance.vision.LedEdge
 import java.io.BufferedWriter
@@ -17,6 +16,8 @@ class ExperimentRecorder(private val context: Context) {
 
     companion object {
         private const val FLUSH_INTERVAL_MS = 1000L
+        /** Nominal period used when a capture timestamp is missing mid-run. */
+        const val FALLBACK_FRAME_MS = 33L
     }
 
     private val writerLock = Any()
@@ -29,6 +30,7 @@ class ExperimentRecorder(private val context: Context) {
     private var processedFrameIndex: Long = 0L
     private var captureOriginNs: Long? = null
     private var lastCaptureTimestampMs: Long = 0L
+    private var lastGoodCaptureNs: Long = 0L
     private var lastLedOn: Boolean? = null
     private var triggerAccumulator = TriggerRunAccumulator()
 
@@ -55,11 +57,12 @@ class ExperimentRecorder(private val context: Context) {
             processedFrameIndex = 0L
             captureOriginNs = null
             lastCaptureTimestampMs = 0L
+            lastGoodCaptureNs = 0L
             lastLedOn = null
             triggerAccumulator = TriggerRunAccumulator()
             lastFlushMs = System.currentTimeMillis()
             currentFile = file
-            writer = BufferedWriter(FileWriter(file)).also {
+            writer = BufferedWriter(FileWriter(file), 32 * 1024).also {
                 it.write(ExperimentCsvFormat.HEADER)
                 it.newLine()
             }
@@ -73,48 +76,96 @@ class ExperimentRecorder(private val context: Context) {
         }
     }
 
+    /**
+     * Closes the recording. Summary/sidecar failures must not leave [writer] open
+     * or [isRecording] stuck true.
+     */
     private fun stopInternal(writeSummary: Boolean) {
-        if (writeSummary && writer != null) {
-            if (triggerAccumulator.hasOpenHold()) {
-                val idx = (processedFrameIndex - 1).coerceAtLeast(0L)
-                writer?.write(
-                    ExperimentCsvFormat.eventRow(
-                        lastCaptureTimestampMs,
-                        "LED_OFF",
-                        "record_stop",
-                        idx,
-                        false,
-                    ),
-                )
-                writer?.newLine()
-            }
-            val summary = triggerAccumulator.finish(lastCaptureTimestampMs)
-            writer?.write(TriggerSummaryFormat.csvFooter(summary))
-            currentFile?.let { csv ->
-                File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json")
-                    .writeText(TriggerSummaryFormat.json(summary))
-            }
-        }
-        flushIfNeeded(force = true)
-        writer?.close()
-        writer = null
-        captureOriginNs = null
+        runRecordingTeardown(
+            block = {
+                if (writeSummary && writer != null) {
+                    val stopFrameIndex = if (processedFrameIndex > 0L) {
+                        processedFrameIndex - 1L
+                    } else {
+                        0L
+                    }
+                    if (triggerAccumulator.hasOpenHold()) {
+                        writer?.write(
+                            ExperimentCsvFormat.eventRow(
+                                lastCaptureTimestampMs,
+                                "LED_OFF",
+                                "record_stop",
+                                stopFrameIndex,
+                                false,
+                            ),
+                        )
+                        writer?.newLine()
+                    }
+                    val summary = triggerAccumulator.finish(
+                        stopTimestampMs = lastCaptureTimestampMs,
+                        stopFrameIndex = stopFrameIndex,
+                    )
+                    TriggerSummaryFormat.summaryEventRows(
+                        summary = summary,
+                        timestampMs = lastCaptureTimestampMs,
+                        frameIndex = stopFrameIndex,
+                    ).forEach { row ->
+                        writer?.write(row)
+                        writer?.newLine()
+                    }
+                    currentFile?.let { csv ->
+                        File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json")
+                            .writeText(TriggerSummaryFormat.json(summary))
+                    }
+                }
+            },
+            teardown = {
+                try {
+                    writer?.flush()
+                } catch (_: Exception) {
+                    // ignore flush errors during teardown
+                }
+                try {
+                    writer?.close()
+                } catch (_: Exception) {
+                    // ignore close errors during teardown
+                }
+                writer = null
+                captureOriginNs = null
+                lastGoodCaptureNs = 0L
+            },
+        )
     }
 
     /**
      * Recording timeline from camera capture timestamps (ns).
-     * Falls back to elapsedRealtimeNanos if the capture clock is missing.
+     * When [captureNs] is missing, reuses the last good timestamp + one frame period
+     * so a mid-run clock-domain switch cannot jump the timeline.
      */
-    fun timestampMsForCapture(captureNs: Long): Long {
+    fun timestampMsForCapture(captureNs: Long): CaptureTimestampResult {
         synchronized(writerLock) {
-            if (writer == null) return 0L
-            val ns = if (captureNs > 0L) captureNs else SystemClock.elapsedRealtimeNanos()
-            val origin = captureOriginNs ?: ns.also { captureOriginNs = it }
-            return ((ns - origin) / 1_000_000L).coerceAtLeast(0L)
+            if (writer == null) return CaptureTimestampResult(0L, usedFallback = false)
+            if (captureNs > 0L) {
+                val origin = captureOriginNs ?: captureNs.also { captureOriginNs = it }
+                lastGoodCaptureNs = captureNs
+                val ms = ((captureNs - origin) / 1_000_000L).coerceAtLeast(0L)
+                return CaptureTimestampResult(ms, usedFallback = false)
+            }
+            // Missing capture timestamp: do not mix in elapsedRealtimeNanos (may be a
+            // different timebase than CameraX SENSOR timestamps).
+            val ms = if (captureOriginNs == null) {
+                captureOriginNs = 0L
+                0L
+            } else {
+                lastCaptureTimestampMs + FALLBACK_FRAME_MS
+            }
+            return CaptureTimestampResult(ms, usedFallback = true)
         }
     }
 
     fun lastTimestampMs(): Long = synchronized(writerLock) { lastCaptureTimestampMs }
+
+    fun hasOpenHold(): Boolean = synchronized(writerLock) { triggerAccumulator.hasOpenHold() }
 
     /**
      * Count a processed analysis frame (including those not written as samples).
@@ -126,6 +177,7 @@ class ExperimentRecorder(private val context: Context) {
         ledLogging: Boolean,
         ledOn: Boolean?,
         ledEdge: LedEdge,
+        usedCaptureFallback: Boolean = false,
     ): Long {
         synchronized(writerLock) {
             val index = processedFrameIndex
@@ -139,6 +191,7 @@ class ExperimentRecorder(private val context: Context) {
                 ledLogging = ledLogging,
                 ledOn = ledOn == true,
                 edge = ledEdge,
+                usedCaptureFallback = usedCaptureFallback,
             )
             return index
         }
@@ -165,21 +218,23 @@ class ExperimentRecorder(private val context: Context) {
         ledOn: Boolean,
         edge: LedEdge,
         isFirstRecordedFrame: Boolean,
+        hadOpenHoldBeforeFrame: Boolean,
     ) {
         synchronized(writerLock) {
             val w = writer ?: return
-            val emitOn = edge == LedEdge.ON || (isFirstRecordedFrame && ledOn && edge != LedEdge.OFF)
+            val emitOn = edge == LedEdge.ON || (isFirstRecordedFrame && ledOn)
             if (emitOn) {
                 w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_ON", "", frameIndex, true))
                 w.newLine()
             }
-            if (edge == LedEdge.OFF) {
+            // Skip unmatched OFF (e.g. OFF transition on frame 0 with no open hold).
+            if (edge == LedEdge.OFF && hadOpenHoldBeforeFrame) {
                 w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_OFF", "", frameIndex, false))
                 w.newLine()
             }
-            if (emitOn || edge == LedEdge.OFF) {
-                flushIfNeeded(force = true)
-            }
+            // Buffered only — forced flush is reserved for Stop / MARK so the
+            // analysis thread stays light under STRATEGY_KEEP_ONLY_LATEST.
+            flushIfNeeded(force = false)
         }
     }
 
@@ -187,6 +242,8 @@ class ExperimentRecorder(private val context: Context) {
         synchronized(writerLock) {
             val w = writer ?: return
             markCounter++
+            // Manual MARK uses the last processed frame's capture timestamp (up to
+            // one frame early relative to the button press).
             val ts = timestampMs ?: lastCaptureTimestampMs
             val idx = frameIndex ?: (processedFrameIndex - 1).coerceAtLeast(0L)
             val label = note.ifBlank { "mark_$markCounter" }
@@ -204,12 +261,16 @@ class ExperimentRecorder(private val context: Context) {
             ?: emptyList()
     }
 
+    fun sidecarFor(csvAbsolutePath: String): File {
+        val csv = File(csvAbsolutePath)
+        return File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json")
+    }
+
     private fun summarizeCsv(file: File): ExperimentFileInfo {
         var samples = 0
         var lastTs = 0L
         file.bufferedReader().useLines { lines ->
             lines.drop(1).forEach { line ->
-                if (line.startsWith("#")) return@forEach
                 if (line.contains(",sample,")) samples++
                 line.split(",").firstOrNull()?.toLongOrNull()?.let { ts ->
                     if (ts > lastTs) lastTs = ts
@@ -249,6 +310,11 @@ class ExperimentRecorder(private val context: Context) {
     }
 }
 
+data class CaptureTimestampResult(
+    val timestampMs: Long,
+    val usedFallback: Boolean,
+)
+
 data class ExperimentFileInfo(
     val name: String,
     val fileName: String,
@@ -257,3 +323,20 @@ data class ExperimentFileInfo(
     val durationMs: Long,
     val createdAtMs: Long,
 )
+
+/**
+ * Shared close-in-finally helper so summary/sidecar failures cannot leak the writer.
+ * Package-visible for unit tests.
+ */
+internal inline fun <T> runRecordingTeardown(
+    block: () -> T,
+    teardown: () -> Unit,
+): Result<T> {
+    return try {
+        Result.success(block())
+    } catch (t: Throwable) {
+        Result.failure(t)
+    } finally {
+        teardown()
+    }
+}

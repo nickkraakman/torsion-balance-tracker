@@ -4,6 +4,7 @@ import dev.qi.torsionbalance.TrackingResult
 import java.util.Locale
 
 object ExperimentCsvFormat {
+    const val COLUMN_COUNT = 13
     const val HEADER =
         "timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad," +
             "x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on"

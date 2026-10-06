@@ -6,8 +6,12 @@
 > into a ~110 ms pulse so the camera could mark *individual* sparks.
 
 Generates a ~110 ms LED flash for each spark-gap discharge, visible to the torsion-balance camera.
-A historical app feature wrote a timestamped `event` row (`SYNC` / `auto_spark`) for each pulse.
-That per-flash MARK path has been replaced by LED on/off logging.
+
+**App behaviour change:** the historical `SYNC` / `auto_spark` MARK rows are gone. With
+**Trigger LED logging** enabled, each ~110 ms flash is logged as a short `LED_ON` /
+`LED_OFF` pair (and `led_on=1` on intervening sample rows), not as a SYNC mark. For
+spark counting from on-time, prefer the button-held trigger LED described in
+[trigger-led.md](trigger-led.md).
 
 ## Why not audio?
 
