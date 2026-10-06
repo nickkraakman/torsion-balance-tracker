@@ -5,52 +5,35 @@ import org.opencv.core.Mat
 import org.opencv.core.Rect
 
 /**
- * Detects LED flash events in a small ROI of the grayscale frame.
- *
- * Uses an EMA baseline to track ambient luma. When the ROI mean rises above [threshold]
- * counts above baseline, fires once and starts a [cooldownMs] refractory period so one
- * physical flash produces exactly one mark. The baseline only advances on non-spike frames
- * so a sustained bright flash does not get absorbed into it.
+ * Measures mean luma in a small ROI and classifies a trigger LED via [LedStateDetector].
  */
 class FlashDetector(
-    var threshold: Double = 40.0,
-    var cooldownMs: Long = 250L,
+    threshold: Double = LedStateDetector.DEFAULT_ON_THRESHOLD,
 ) {
-    private var baseline = -1.0
-    private var lastFireMs = Long.MIN_VALUE
-    private val alpha = 0.05
+    private val detector = LedStateDetector(onThreshold = threshold)
 
-    fun reset() {
-        baseline = -1.0
-        lastFireMs = Long.MIN_VALUE
-    }
+    var threshold: Double
+        get() = detector.onThreshold
+        set(value) {
+            detector.onThreshold = value
+        }
 
-    /**
-     * Returns true exactly once per flash event. [gray] is the full-frame Y-plane Mat;
-     * [roi] is the region to inspect; [nowMs] is the current recording timestamp in ms.
-     */
-    fun processFrame(gray: Mat, roi: Rect, nowMs: Long): Boolean {
-        val sub = gray.submat(roi)
-        val mean = try {
-            Core.mean(sub).`val`[0]
-        } finally {
-            sub.release()
-        }
-        if (baseline < 0) {
-            baseline = mean
-            return false
-        }
-        val spiking = mean - baseline > threshold
-        if (!spiking) {
-            baseline = alpha * mean + (1 - alpha) * baseline
-            return false
-        }
-        if (nowMs - lastFireMs < cooldownMs) return false
-        lastFireMs = nowMs
-        return true
+    fun reset() = detector.reset()
+
+    fun processFrame(gray: Mat, roi: Rect): LedObservation {
+        return detector.process(measureMean(gray, roi))
     }
 
     companion object {
         const val ROI_HALF = 24
+
+        fun measureMean(gray: Mat, roi: Rect): Double {
+            val sub = gray.submat(roi)
+            return try {
+                Core.mean(sub).`val`[0]
+            } finally {
+                sub.release()
+            }
+        }
     }
 }

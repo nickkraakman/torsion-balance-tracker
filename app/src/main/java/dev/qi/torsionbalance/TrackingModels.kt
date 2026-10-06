@@ -101,6 +101,15 @@ data class CalibrationState(
     val flashThreshold: Int = 40,
 )
 
+/** Live trigger-LED ROI readout for threshold tuning. */
+data class LedMonitorState(
+    val mean: Double = 0.0,
+    val baseline: Double = 0.0,
+    val delta: Double = 0.0,
+    val ledOn: Boolean = false,
+    val roiSet: Boolean = false,
+)
+
 data class ExperimentSummary(
     val name: String,
     val fileName: String,

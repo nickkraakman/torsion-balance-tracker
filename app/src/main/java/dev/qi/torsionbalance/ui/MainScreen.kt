@@ -66,6 +66,7 @@ fun MainScreen(
     val scaleOverlay by viewModel.scaleOverlay.collectAsState()
     val loupe by viewModel.loupe.collectAsState()
     val settingFlashRoi by viewModel.settingFlashRoi.collectAsState()
+    val ledMonitor by viewModel.ledMonitor.collectAsState()
 
     var showRecordDialog by remember { mutableStateOf(false) }
     var experimentName by remember { mutableStateOf("run_01") }
@@ -168,6 +169,7 @@ fun MainScreen(
                     appMode = appMode,
                     scaleOverlay = scaleOverlay,
                     scaleDragPreview = scaleDragPreview,
+                    ledMonitor = ledMonitor,
                 )
 
                 LoupeOverlay(

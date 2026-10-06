@@ -67,6 +67,8 @@ dependencies {
     implementation(libs.datastore)
     implementation(libs.coroutines.android)
 
+    testImplementation("junit:junit:4.13.2")
+
     val localOpenCv = file("libs/opencv.aar")
     if (localOpenCv.exists()) {
         implementation(files(localOpenCv))

@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import dev.qi.torsionbalance.AppMode
 import dev.qi.torsionbalance.vision.FlashDetector
 import dev.qi.torsionbalance.CalibrationState
+import dev.qi.torsionbalance.LedMonitorState
 import dev.qi.torsionbalance.Point2D
 import dev.qi.torsionbalance.ScaleCalibrationOverlay
 import dev.qi.torsionbalance.TrackingFlags
@@ -31,6 +32,7 @@ fun TrackingOverlay(
     appMode: AppMode = AppMode.LIVE,
     scaleOverlay: ScaleCalibrationOverlay? = null,
     scaleDragPreview: Point2D? = null,
+    ledMonitor: LedMonitorState? = null,
 ) {
     if (viewWidthPx <= 0f || viewHeightPx <= 0f) return
     val hasFlashRoi = calibration.flashRoiX >= 0
@@ -144,7 +146,7 @@ fun TrackingOverlay(
                 calibration.flashRoiX.toFloat() + half,
                 calibration.flashRoiY.toFloat() + half,
             )
-            val flashColor = Color(0xFFFFD600)
+            val flashColor = if (ledMonitor?.ledOn == true) Color(0xFF76FF03) else Color(0xFFFFD600)
             drawRect(
                 color = flashColor,
                 topLeft = Offset(fLeft, fTop),
@@ -155,6 +157,47 @@ fun TrackingOverlay(
                 ),
             )
             drawCircle(flashColor, radius = 4f, center = Offset(fx, fy))
+            ledMonitor?.takeIf { it.roiSet }?.let { led ->
+                val label = if (led.ledOn) {
+                    "LED ON  Δ=${led.delta.toInt()}  mean=${led.mean.toInt()}"
+                } else {
+                    "LED off  Δ=${led.delta.toInt()}  mean=${led.mean.toInt()}  base=${led.baseline.toInt()}"
+                }
+                val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = android.graphics.Color.WHITE
+                    textSize = 22f
+                    typeface = Typeface.DEFAULT_BOLD
+                }
+                val textWidth = textPaint.measureText(label)
+                val padH = 8f
+                val padV = 4f
+                val textHeight = textPaint.descent() - textPaint.ascent()
+                var left = fLeft
+                var top = fBottom + 6f
+                if (left + textWidth + padH * 2 > size.width) {
+                    left = (size.width - textWidth - padH * 2).coerceAtLeast(0f)
+                }
+                if (top + textHeight + padV * 2 > size.height) {
+                    top = (fTop - textHeight - padV * 2 - 6f).coerceAtLeast(0f)
+                }
+                val pill = RectF(
+                    left,
+                    top,
+                    left + textWidth + padH * 2,
+                    top + textHeight + padV * 2,
+                )
+                drawContext.canvas.nativeCanvas.apply {
+                    drawRoundRect(pill, 6f, 6f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = android.graphics.Color.argb(180, 0, 0, 0)
+                    })
+                    drawText(
+                        label,
+                        pill.left + padH,
+                        pill.top + padV - textPaint.ascent(),
+                        textPaint,
+                    )
+                }
+            }
         }
 
         if (tr != null && tr.reference.found) {

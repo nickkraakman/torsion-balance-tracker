@@ -43,6 +43,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
 ) {
     val calibration by viewModel.calibration.collectAsState()
+    val ledMonitor by viewModel.ledMonitor.collectAsState()
     val context = LocalContext.current
 
     var armLength by remember { mutableStateOf("") }
@@ -154,7 +155,12 @@ fun SettingsScreen(
                 Text("Apply blob filters")
             }
 
-            Text("Spark discharge auto-MARK", modifier = Modifier.padding(top = 16.dp))
+            Text("Trigger LED logging", modifier = Modifier.padding(top = 16.dp))
+            Text(
+                "Logs when the in-view trigger LED is on (button held). " +
+                    "Sparks per run ≈ firing rate × total LED-on seconds.",
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(
                     checked = flashEnabled,
@@ -165,7 +171,7 @@ fun SettingsScreen(
                     modifier = Modifier.padding(start = 8.dp),
                 )
             }
-            Text("Flash threshold (luma counts): ${flashThreshold.toInt()}")
+            Text("On-threshold (luma counts above dark baseline): ${flashThreshold.toInt()}")
             Slider(
                 value = flashThreshold,
                 onValueChange = { flashThreshold = it },
@@ -174,7 +180,7 @@ fun SettingsScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     viewModel.updateFlashSettings(flashEnabled, flashThreshold.toInt())
-                }) { Text("Apply flash settings") }
+                }) { Text("Apply LED settings") }
                 Button(onClick = {
                     viewModel.armFlashRoiTap()
                     onBack()
@@ -189,6 +195,26 @@ fun SettingsScreen(
                 Text(
                     "LED region: not set",
                     modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            if (ledMonitor.roiSet) {
+                val state = if (ledMonitor.ledOn) "ON" else "off"
+                Text(
+                    "Live ROI  mean=${ledMonitor.mean.toInt()}  " +
+                        "baseline=${ledMonitor.baseline.toInt()}  " +
+                        "Δ=${ledMonitor.delta.toInt()}  LED $state",
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Text(
+                    "Tune so Δ stays near 0 with the LED off, and well above the threshold while held. " +
+                        "Set the region with the LED off so the dark baseline can be learned.",
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            } else {
+                Text(
+                    "Live ROI brightness appears here after the LED region is set " +
+                        "(keep the camera preview running).",
+                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
 

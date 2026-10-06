@@ -11,6 +11,8 @@ import dev.qi.torsionbalance.data.CalibrationStore
 import dev.qi.torsionbalance.data.ExperimentFileInfo
 import dev.qi.torsionbalance.data.ExperimentRecorder
 import dev.qi.torsionbalance.vision.FlashDetector
+import dev.qi.torsionbalance.vision.LedEdge
+import dev.qi.torsionbalance.vision.LedObservation
 import dev.qi.torsionbalance.vision.MarkerTracker
 import dev.qi.torsionbalance.vision.RoiMath
 import dev.qi.torsionbalance.vision.YPlaneMat
@@ -76,6 +78,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _settingFlashRoi = MutableStateFlow(false)
     val settingFlashRoi: StateFlow<Boolean> = _settingFlashRoi.asStateFlow()
 
+    private val _ledMonitor = MutableStateFlow(LedMonitorState())
+    val ledMonitor: StateFlow<LedMonitorState> = _ledMonitor.asStateFlow()
+
     var scaleKnownMm: Double = 10.0
     private var signBaselineXRel: Double? = null
 
@@ -126,6 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onFrame(image: ImageProxy) {
+        val captureNs = image.imageInfo.timestamp
         if (!ensureOpenCv()) {
             image.close()
             return
@@ -145,11 +151,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val cal = _calibration.value
         val mode = _appMode.value
-        val timestampMs = if (recorder.isRecording) {
-            recorder.currentTimestampMs()
-        } else {
-            0L
-        }
+        val ledObs = processLedRoi(gray, cal)
 
         if (!shouldTrack(cal, mode)) {
             gray.release()
@@ -158,6 +160,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         maybeRestoreTrackerFromStore(cal, gray)
+
+        val timestampMs = if (recorder.isRecording) {
+            recorder.timestampMsForCapture(captureNs)
+        } else {
+            0L
+        }
 
         val result = tracker.processFrame(
             gray = gray,
@@ -170,20 +178,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             timestampMs = timestampMs,
         )
 
-        if (cal.flashAutoMark && recorder.isRecording && cal.flashRoiX >= 0) {
-            val roi = RoiMath.clampRoi(
-                gray,
-                cal.flashRoiX.toFloat(),
-                cal.flashRoiY.toFloat(),
-                FlashDetector.ROI_HALF,
-                FlashDetector.ROI_HALF,
-            )
-            if (flashDetector.processFrame(gray, roi, recorder.currentTimestampMs())) {
-                recorder.writeMark("auto_spark")
-                _statusMessage.value = "Spark detected — MARK written"
-            }
-        }
-
         gray.release()
         _tracking.value = result
 
@@ -195,15 +189,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (mode == AppMode.RECORDING && recorder.isRecording) {
-            val ts = recorder.currentTimestampMs()
-            if (shouldEmitSample(ts)) {
-                recorder.writeSample(result, ts)
+            val ledLogging = cal.flashAutoMark && cal.flashRoiX >= 0
+            val ledOn = if (ledLogging) ledObs?.ledOn else null
+            val ledEdge = if (ledLogging) (ledObs?.edge ?: LedEdge.NONE) else LedEdge.NONE
+            val frameIndex = recorder.noteProcessedFrame(
+                timestampMs = timestampMs,
+                captureNs = captureNs,
+                ledLogging = ledLogging,
+                ledOn = ledOn,
+                ledEdge = ledEdge,
+            )
+            if (ledLogging && ledObs != null) {
+                recorder.writeLedEdgeIfNeeded(
+                    timestampMs = timestampMs,
+                    frameIndex = frameIndex,
+                    ledOn = ledObs.ledOn,
+                    edge = ledObs.edge,
+                    isFirstRecordedFrame = frameIndex == 0L,
+                )
+            }
+            // LED state must be on every processed frame; sample-rate thinning would drop edges.
+            if (ledLogging || shouldEmitSample(timestampMs)) {
+                recorder.writeSample(result, timestampMs, frameIndex, ledOn)
                 _recordingSampleCount.update { it + 1 }
             }
-            _recordingElapsedMs.value = ts
+            _recordingElapsedMs.value = timestampMs
         }
 
         handleCalibrationFrame(result)
+    }
+
+    private fun processLedRoi(gray: Mat, cal: CalibrationState): LedObservation? {
+        if (cal.flashRoiX < 0) {
+            _ledMonitor.value = LedMonitorState()
+            return null
+        }
+        val roi = RoiMath.clampRoi(
+            gray,
+            cal.flashRoiX.toFloat(),
+            cal.flashRoiY.toFloat(),
+            FlashDetector.ROI_HALF,
+            FlashDetector.ROI_HALF,
+        )
+        val obs = flashDetector.processFrame(gray, roi)
+        _ledMonitor.value = LedMonitorState(
+            mean = obs.mean,
+            baseline = obs.baseline,
+            delta = obs.delta,
+            ledOn = obs.ledOn,
+            roiSet = true,
+        )
+        return obs
     }
 
     private fun handleCalibrationFrame(result: TrackingResult) {
@@ -489,7 +525,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         lastSampleEmitMs = 0L
         resetMaxDeflection()
-        flashDetector.reset()
         recorder.start(name)
         _appMode.value = AppMode.RECORDING
         _recordingSampleCount.value = 0
@@ -509,7 +544,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _statusMessage.value = "Start recording before MARK"
             return
         }
-        recorder.writeMark(note)
+        recorder.writeMark(
+            note = note,
+            timestampMs = recorder.lastTimestampMs(),
+        )
         _statusMessage.value = "MARK event written"
     }
 
@@ -522,7 +560,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _settingFlashRoi.value = false
         calibrationStore.update { it.copy(flashRoiX = tapX.toInt(), flashRoiY = tapY.toInt()) }
         flashDetector.reset()
-        _statusMessage.value = "LED flash region set"
+        _statusMessage.value = "Trigger LED region set — leave the LED off for a moment to learn the baseline"
     }
 
     fun updateFlashSettings(enabled: Boolean, threshold: Int) {
@@ -541,7 +579,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteExperiment(path: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { java.io.File(path).delete() }
+            withContext(Dispatchers.IO) {
+                val csv = java.io.File(path)
+                csv.delete()
+                java.io.File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json").delete()
+            }
             refreshExperiments()
         }
     }
