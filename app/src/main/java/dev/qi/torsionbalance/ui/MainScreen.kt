@@ -42,6 +42,8 @@ import dev.qi.torsionbalance.AppMode
 import dev.qi.torsionbalance.CalibrationStep
 import dev.qi.torsionbalance.MainViewModel
 import dev.qi.torsionbalance.Point2D
+import dev.qi.torsionbalance.SignSource
+import dev.qi.torsionbalance.data.ExperimentCsvFormat
 
 @Composable
 fun MainScreen(
@@ -64,6 +66,7 @@ fun MainScreen(
     val loupe by viewModel.loupe.collectAsState()
     val settingFlashRoi by viewModel.settingFlashRoi.collectAsState()
     val ledMonitor by viewModel.ledMonitor.collectAsState()
+    val signSource by viewModel.signSource.collectAsState()
 
     var showRecordDialog by remember { mutableStateOf(false) }
     var experimentName by remember { mutableStateOf("run_01") }
@@ -261,6 +264,18 @@ fun MainScreen(
                 )
             }
 
+            if (appMode == AppMode.LIVE &&
+                calibration.calibrationComplete &&
+                calStep != CalibrationStep.SET_SIGN_NUDGE
+            ) {
+                DirectionStatusRow(
+                    signConfigured = calibration.signConfigured,
+                    signMultiplier = calibration.signMultiplier,
+                    signSource = signSource,
+                    onRecalibrate = { viewModel.recalibrateDirection() },
+                )
+            }
+
             if (appMode == AppMode.CALIBRATE && calStep == CalibrationStep.SET_SCALE_FIRST_POINT) {
                 OutlinedTextField(
                     value = scaleMmInput,
@@ -320,6 +335,32 @@ fun MainScreen(
 }
 
 @Composable
+private fun DirectionStatusRow(
+    signConfigured: Boolean,
+    signMultiplier: Double,
+    signSource: SignSource,
+    onRecalibrate: () -> Unit,
+) {
+    val label = ExperimentCsvFormat.formatSignLabel(signMultiplier)
+    val text = if (signConfigured) {
+        "Direction: ${signSource.csvValue()} ($label) – Recalibrate"
+    } else {
+        "Direction: not set – Recalibrate"
+    }
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onRecalibrate) {
+            Text(text, color = Color.White)
+        }
+    }
+}
+
+@Composable
 private fun ControlBar(
     modifier: Modifier = Modifier,
     appMode: AppMode,
@@ -354,6 +395,8 @@ private fun ControlBar(
                         CalibrationStep.SET_ZERO -> Button(onClick = onSetZero) { Text("Zero") }
                         CalibrationStep.LOCK_CAMERA -> Button(onClick = onLockCamera) { Text("Lock Camera") }
                         CalibrationStep.SET_ARM_LENGTH -> Button(onClick = onSkipArmLength) { Text("Continue") }
+                        CalibrationStep.SET_SIGN_NUDGE ->
+                            Text("Nudge arm for + direction", color = Color.Gray)
                         CalibrationStep.SET_SCALE_FIRST_POINT,
                         CalibrationStep.SET_SCALE_SECOND_POINT,
                         -> Text("Drag to set scale", color = Color.Gray)

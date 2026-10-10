@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import dev.qi.torsionbalance.camera.CameraController
 import dev.qi.torsionbalance.camera.PreviewCoordinateMapper
 import dev.qi.torsionbalance.data.CalibrationStore
+import dev.qi.torsionbalance.data.ExperimentCsvFormat
 import dev.qi.torsionbalance.data.ExperimentFileInfo
 import dev.qi.torsionbalance.data.ExperimentRecorder
 import dev.qi.torsionbalance.data.TriggerRunAccumulator
@@ -84,6 +85,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _ledMonitor = MutableStateFlow(LedMonitorState())
     val ledMonitor: StateFlow<LedMonitorState> = _ledMonitor.asStateFlow()
 
+    /**
+     * Session provenance for the arm-direction sign. Reloads as [SignSource.SAVED] when
+     * DataStore already has a configured sign; manual/nudge updates set the matching source.
+     */
+    private val _signSource = MutableStateFlow(SignSource.NONE)
+    val signSource: StateFlow<SignSource> = _signSource.asStateFlow()
+
     var scaleKnownMm: Double = 10.0
     @Volatile
     private var signNudgeDetector: SignNudgeDetector? = null
@@ -92,6 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var openCvReady = false
     private var lastFrameWidth: Int = 0
     private var lastFrameHeight: Int = 0
+    private var signSourceHydrated = false
 
     private val grayLock = Any()
     private var lastGray: Mat? = null
@@ -106,11 +115,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             calibrationStore.calibrationFlow.collect { state ->
                 _calibration.value = state
+                hydrateSignSource(state)
                 tracker.setKalmanParams(state.kalmanProcessNoise, state.kalmanMeasurementNoise)
                 flashDetector.threshold = state.flashThreshold.toDouble()
             }
         }
         refreshExperiments()
+    }
+
+    private fun hydrateSignSource(state: CalibrationState) {
+        if (!signSourceHydrated) {
+            signSourceHydrated = true
+            _signSource.value = if (state.signConfigured) SignSource.SAVED else SignSource.NONE
+            return
+        }
+        if (!state.signConfigured) {
+            _signSource.value = SignSource.NONE
+        }
     }
 
     fun ensureOpenCv(): Boolean {
@@ -276,12 +297,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val sign = detector.process(result.xRelPx) ?: return
                 signNudgeDetector = null
                 viewModelScope.launch {
+                    _signSource.value = SignSource.NUDGED
                     calibrationStore.update {
-                        it.copy(signMultiplier = sign, calibrationComplete = true)
+                        it.copy(
+                            signMultiplier = sign,
+                            signConfigured = true,
+                            calibrationComplete = true,
+                        )
                     }
                     _calibrationStep.value = CalibrationStep.DONE
                     _appMode.value = AppMode.LIVE
-                    _statusMessage.value = "Calibration complete — ready to measure"
+                    val label = ExperimentCsvFormat.formatSignLabel(sign)
+                    _statusMessage.value =
+                        "Direction set ($label) — ready to measure without nudging"
                 }
             }
             else -> Unit
@@ -504,9 +532,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun skipArmLengthAndContinue() {
+        val cal = _calibration.value
+        if (cal.signConfigured) {
+            viewModelScope.launch {
+                calibrationStore.update { it.copy(calibrationComplete = true) }
+                _calibrationStep.value = CalibrationStep.DONE
+                _appMode.value = AppMode.LIVE
+                val label = ExperimentCsvFormat.formatSignLabel(cal.signMultiplier)
+                val source = _signSource.value.csvValue()
+                _statusMessage.value =
+                    "Calibration complete — using $source direction ($label)"
+            }
+            return
+        }
+        beginSignNudge(prompt = "Nudge the arm to the right (this sets the + direction)")
+    }
+
+    /**
+     * Clears the persisted direction and runs the nudge flow again.
+     * Use before a mount change, or when the saved sign looks wrong.
+     */
+    fun recalibrateDirection() {
+        viewModelScope.launch {
+            calibrationStore.update { it.copy(signConfigured = false) }
+            _signSource.value = SignSource.NONE
+            beginSignNudge(prompt = "Nudge the arm to the right (this sets the + direction)")
+        }
+    }
+
+    private fun beginSignNudge(prompt: String) {
         signNudgeDetector = SignNudgeDetector()
+        _appMode.value = AppMode.CALIBRATE
         _calibrationStep.value = CalibrationStep.SET_SIGN_NUDGE
-        _statusMessage.value = "Nudge the arm to the right (this sets the + direction)"
+        _statusMessage.value = prompt
+    }
+
+    /**
+     * Manually choose whether increasing image xRel is +θ (+1) or -θ (-1).
+     * Persists immediately so overnight baselines can skip the physical nudge.
+     */
+    fun setSignMultiplier(sign: Double) {
+        val normalized = when {
+            sign > 0.0 -> 1.0
+            sign < 0.0 -> -1.0
+            else -> return
+        }
+        viewModelScope.launch {
+            _signSource.value = SignSource.MANUAL
+            calibrationStore.update {
+                it.copy(signMultiplier = normalized, signConfigured = true)
+            }
+            val label = ExperimentCsvFormat.formatSignLabel(normalized)
+            _statusMessage.value = "Direction saved ($label)"
+        }
     }
 
     fun setArmLength(mm: Double) {
@@ -549,9 +627,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _statusMessage.value = "Complete calibration before recording"
             return
         }
+        if (!cal.signConfigured) {
+            beginSignNudge(
+                prompt = "Set direction before recording — nudge the arm to the right",
+            )
+            return
+        }
         lastSampleEmitMs = 0L
         resetMaxDeflection()
-        recorder.start(name)
+        val source = _signSource.value.let {
+            if (it == SignSource.NONE) SignSource.SAVED else it
+        }
+        recorder.start(name, signMultiplier = cal.signMultiplier, signSource = source)
         _appMode.value = AppMode.RECORDING
         _recordingSampleCount.value = 0
         _recordingElapsedMs.value = 0L
@@ -651,6 +738,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cameraController.unlock()
             tracker.reset()
             trackerRestoredFromStore = false
+            signNudgeDetector = null
+            _signSource.value = SignSource.NONE
             _calibrationStep.value = CalibrationStep.TAP_ARM
             _appMode.value = AppMode.LIVE
             _tracking.value = null

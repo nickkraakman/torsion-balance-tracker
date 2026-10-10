@@ -1,9 +1,12 @@
 package dev.qi.torsionbalance.data
 
 import dev.qi.torsionbalance.MarkerDetection
+import dev.qi.torsionbalance.SignSource
 import dev.qi.torsionbalance.TrackingFlags
 import dev.qi.torsionbalance.TrackingResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ExperimentCsvFormatTest {
@@ -11,6 +14,38 @@ class ExperimentCsvFormatTest {
     @Test
     fun headerHasThirteenColumns() {
         assertEquals(ExperimentCsvFormat.COLUMN_COUNT, ExperimentCsvFormat.HEADER.split(",").size)
+    }
+
+    @Test
+    fun metadataLines_recordSignAndSourceWithoutCommas() {
+        val lines = ExperimentCsvFormat.metadataLines(-1.0, SignSource.SAVED)
+        assertEquals(2, lines.size)
+        assertEquals("# sign_multiplier=-1", lines[0])
+        assertEquals("# sign_source=saved", lines[1])
+        lines.forEach { line ->
+            assertTrue(line.startsWith("# "))
+            assertFalse(line.contains(","))
+        }
+    }
+
+    @Test
+    fun metadataLines_manualAndNudgedSources() {
+        assertEquals(
+            listOf("# sign_multiplier=+1", "# sign_source=manual"),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.MANUAL),
+        )
+        assertEquals(
+            listOf("# sign_multiplier=+1", "# sign_source=nudged"),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.NUDGED),
+        )
+    }
+
+    @Test
+    fun formatSignLabel_normalizesMagnitude() {
+        assertEquals("+1", ExperimentCsvFormat.formatSignLabel(1.0))
+        assertEquals("+1", ExperimentCsvFormat.formatSignLabel(2.0))
+        assertEquals("-1", ExperimentCsvFormat.formatSignLabel(-1.0))
+        assertEquals("-1", ExperimentCsvFormat.formatSignLabel(-0.5))
     }
 
     @Test
