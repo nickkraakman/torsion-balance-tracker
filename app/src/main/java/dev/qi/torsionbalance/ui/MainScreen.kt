@@ -1,6 +1,5 @@
 package dev.qi.torsionbalance.ui
 
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -39,7 +38,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import dev.qi.torsionbalance.AppMode
 import dev.qi.torsionbalance.CalibrationStep
 import dev.qi.torsionbalance.MainViewModel
@@ -52,7 +50,6 @@ fun MainScreen(
     onRequestCameraPermission: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenExperiments: () -> Unit,
-    onBindCamera: (PreviewView) -> Unit,
 ) {
     val tracking by viewModel.tracking.collectAsState()
     val calibration by viewModel.calibration.collectAsState()
@@ -84,18 +81,6 @@ fun MainScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (cameraPermissionGranted) {
-            var previewView by remember { mutableStateOf<PreviewView?>(null) }
-
-            AndroidView(
-                factory = { ctx ->
-                    PreviewView(ctx).also { pv ->
-                        previewView = pv
-                        onBindCamera(pv)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
-
             Box(
                 modifier = Modifier
                     .fillMaxSize()
