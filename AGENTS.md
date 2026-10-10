@@ -43,3 +43,11 @@ unzip -q -o /tmp/platform-tools-darwin.zip -d .tools
 ## Camera session
 
 Arm length is the radius from the pivot to the moving dot, in millimetres. The angle is `atan2(displacementMm, armLengthMm)`.
+
+## Cloud Agent
+
+The image JDK is 21, inside AGP 8.x's supported range (17–24). The Android SDK lives at `/opt/android-sdk`. Login shells export `ANDROID_HOME` and `ANDROID_SDK_ROOT` from `/etc/profile.d/android-sdk.sh`, and `adb` on `PATH` is that SDK's platform-tools (1.0.41 or newer). Install writes gitignored `local.properties` with `sdk.dir=/opt/android-sdk`.
+
+Verify with `./gradlew testDebugUnitTest assembleDebug --no-daemon`. The debug APK is `app/build/outputs/apk/debug/app-debug.apk`.
+
+There is no phone on this VM. Do not follow the Mac wireless-adb steps above, and do not download the Darwin platform-tools zip.
