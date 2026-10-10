@@ -48,3 +48,7 @@ Requires Android Studio (or SDK + JDK 17–24) and Android SDK API 34.
 `gradle.properties` no longer pins a machine-local JDK path. If your default Java is outside JDK 17–24, set `org.gradle.java.home` in `~/.gradle/gradle.properties` (or export `JAVA_HOME`) to a JDK 17 or 21 install.
 
 Install the APK on the phone, enable **Install unknown apps**, and grant **Camera** permission on first launch.
+
+## License
+
+[MIT](LICENSE) © 2026 Nick Kraakman
