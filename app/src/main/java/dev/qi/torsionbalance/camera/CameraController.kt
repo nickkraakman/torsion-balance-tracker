@@ -2,11 +2,13 @@ package dev.qi.torsionbalance.camera
 
 import android.content.Context
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
@@ -24,6 +26,8 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -53,6 +57,20 @@ class CameraController(
 
     private var lockedFocusDistance: Float = 0f
     private var lastSampledFocusDistance: Float = 0f
+    private var lockedExposureTimeNs: Long = 0L
+    private var lockedSensitivity: Int = 0
+    private var lockedFrameDurationNs: Long = 0L
+
+    @Volatile
+    private var latestExposureTimeNs: Long = 0L
+
+    @Volatile
+    private var latestSensitivity: Int = 0
+
+    @Volatile
+    private var latestFrameDurationNs: Long = 0L
+
+    private val sessionMutex = Mutex()
 
     @Volatile
     private var samplingFocus: Boolean = false
@@ -65,6 +83,9 @@ class CameraController(
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (it > 0L) latestExposureTimeNs = it }
+            result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (it > 0) latestSensitivity = it }
+            result.get(CaptureResult.SENSOR_FRAME_DURATION)?.let { if (it > 0L) latestFrameDurationNs = it }
             if (!samplingFocus) return
             val dist = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
             if (dist != null && dist.isFinite() && dist > 0f) {
@@ -90,58 +111,80 @@ class CameraController(
         previewView: PreviewView,
         onFrame: (ImageProxy) -> Unit,
     ) {
-        previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
-        boundLifecycleOwner = lifecycleOwner
-        boundPreviewView = previewView
-        frameCallback = onFrame
-        val provider = obtainProvider()
-        cameraProvider = provider
-        bindUseCases(provider, lifecycleOwner, previewView, onFrame)
+        sessionMutex.withLock {
+            previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
+            boundLifecycleOwner = lifecycleOwner
+            boundPreviewView = previewView
+            frameCallback = onFrame
+            val provider = obtainProvider()
+            cameraProvider = provider
+            bindUseCases(provider, lifecycleOwner, previewView, onFrame)
+            if (!isLocked) return@withLock
+            // AE lock in the first request of a new session freezes the sensor's
+            // default (near-black) exposure. Reapply the exposure captured when
+            // the user locked, or meter once and then lock.
+            if (!hasManualExposure()) {
+                delay(AE_WARMUP_MS)
+                camera?.let { rememberConvergedExposure(it) }
+                if (hasManualExposure()) {
+                    bindUseCases(provider, lifecycleOwner, previewView, onFrame)
+                }
+            }
+            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
+        }
     }
 
     /**
      * Wait for auto-exposure/focus to settle, sample focus distance, then lock AE (and AF if sampled).
      */
     suspend fun sampleAndLock(): Boolean {
-        val cam = camera ?: return false
-        val camera2Control = Camera2CameraControl.from(cam.cameraControl)
+        sessionMutex.withLock {
+            val cam = camera ?: return false
+            val camera2Control = Camera2CameraControl.from(cam.cameraControl)
 
-        triggerCenterAutofocus(cam)
-        delay(AE_WARMUP_MS)
+            triggerCenterAutofocus(cam)
+            delay(AE_WARMUP_MS)
 
-        synchronized(focusSamples) { focusSamples.clear() }
-        samplingFocus = true
-        withTimeoutOrNull(FOCUS_SAMPLE_TIMEOUT_MS) {
-            while (true) {
-                val count = synchronized(focusSamples) { focusSamples.size }
-                if (count >= FOCUS_SAMPLE_COUNT) break
-                delay(50)
+            synchronized(focusSamples) { focusSamples.clear() }
+            samplingFocus = true
+            withTimeoutOrNull(FOCUS_SAMPLE_TIMEOUT_MS) {
+                while (true) {
+                    val count = synchronized(focusSamples) { focusSamples.size }
+                    if (count >= FOCUS_SAMPLE_COUNT) break
+                    delay(50)
+                }
             }
-        }
-        samplingFocus = false
+            samplingFocus = false
 
-        val sampled = synchronized(focusSamples) { focusSamples.isNotEmpty() }
-        focusSampled = sampled
-        if (sampled) {
-            lockedFocusDistance = lastSampledFocusDistance
-        }
+            val sampled = synchronized(focusSamples) { focusSamples.isNotEmpty() }
+            focusSampled = sampled
+            if (sampled) {
+                lockedFocusDistance = lastSampledFocusDistance
+            }
 
-        isLocked = true
-        applyLock(camera2Control)
-        return sampled
+            rememberConvergedExposure(cam)
+            isLocked = true
+            applyLock(camera2Control)
+            return sampled
+        }
     }
 
-    fun unlock() {
-        isLocked = false
-        focusSampled = false
-        lockedFocusDistance = 0f
-        samplingFocus = false
-        synchronized(focusSamples) { focusSamples.clear() }
-        val cam = camera ?: run {
-            rebind()
-            return
+    suspend fun unlock() {
+        sessionMutex.withLock {
+            isLocked = false
+            focusSampled = false
+            lockedFocusDistance = 0f
+            lockedExposureTimeNs = 0L
+            lockedSensitivity = 0
+            lockedFrameDurationNs = 0L
+            samplingFocus = false
+            synchronized(focusSamples) { focusSamples.clear() }
+            val owner = boundLifecycleOwner ?: return
+            val view = boundPreviewView ?: return
+            val cb = frameCallback ?: return
+            val provider = cameraProvider ?: return
+            bindUseCases(provider, owner, view, cb)
         }
-        Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions()
     }
 
     private fun triggerCenterAutofocus(cam: Camera) {
@@ -157,29 +200,15 @@ class CameraController(
 
     private fun applyLock(camera2Control: Camera2CameraControl) {
         val builder = CaptureRequestOptions.Builder()
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
-            .setCaptureRequestOption(
-                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
-            )
-            .setCaptureRequestOption(
-                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-            )
-        if (focusSampled) {
-            builder
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance)
-        }
+        writeLockOptions(
+            setOption = object : RequestOptionSetter {
+                override fun <T : Any> set(key: CaptureRequest.Key<T>, value: T) {
+                    builder.setCaptureRequestOption(key, value)
+                }
+            },
+            includeAeLockFallback = true,
+        )
         camera2Control.captureRequestOptions = builder.build()
-    }
-
-    private fun rebind() {
-        val owner = boundLifecycleOwner ?: return
-        val view = boundPreviewView ?: return
-        val cb = frameCallback ?: return
-        val provider = cameraProvider ?: return
-        bindUseCases(provider, owner, view, cb)
     }
 
     private fun bindUseCases(
@@ -218,46 +247,93 @@ class CameraController(
             preview,
             analysis,
         )
-
-        if (isLocked) {
-            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
-        }
     }
 
     private fun applyCamera2LockAtBind(builder: Preview.Builder) {
         if (!isLocked) return
         val ext = Camera2Interop.Extender(builder)
-        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
-        ext.setCaptureRequestOption(
-            CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-            CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+        writeLockOptions(
+            setOption = object : RequestOptionSetter {
+                override fun <T : Any> set(key: CaptureRequest.Key<T>, value: T) {
+                    ext.setCaptureRequestOption(key, value)
+                }
+            },
+            includeAeLockFallback = false,
         )
-        ext.setCaptureRequestOption(
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        )
-        if (focusSampled) {
-            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            ext.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance)
-        }
     }
 
     private fun applyCamera2LockAtBind(builder: ImageAnalysis.Builder) {
         if (!isLocked) return
         val ext = Camera2Interop.Extender(builder)
-        ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
-        ext.setCaptureRequestOption(
+        writeLockOptions(
+            setOption = object : RequestOptionSetter {
+                override fun <T : Any> set(key: CaptureRequest.Key<T>, value: T) {
+                    ext.setCaptureRequestOption(key, value)
+                }
+            },
+            includeAeLockFallback = false,
+        )
+    }
+
+    /**
+     * Exposure and focus to hold while locked.
+     *
+     * [includeAeLockFallback] is only safe on a session that has already metered.
+     * A new session must not set [CaptureRequest.CONTROL_AE_LOCK] until then: the
+     * lock freezes the sensor's unset exposure, which is nearly black.
+     */
+    private fun writeLockOptions(
+        setOption: RequestOptionSetter,
+        includeAeLockFallback: Boolean,
+    ) {
+        setOption.set(
             CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
             CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
         )
-        ext.setCaptureRequestOption(
+        setOption.set(
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         )
-        if (focusSampled) {
-            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            ext.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance)
+        if (hasManualExposure()) {
+            setOption.set(CaptureRequest.CONTROL_AE_LOCK, false)
+            setOption.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            setOption.set(CaptureRequest.SENSOR_EXPOSURE_TIME, lockedExposureTimeNs)
+            setOption.set(CaptureRequest.SENSOR_SENSITIVITY, lockedSensitivity)
+            setOption.set(
+                CaptureRequest.SENSOR_FRAME_DURATION,
+                lockedFrameDurationNs.coerceAtLeast(lockedExposureTimeNs),
+            )
+        } else if (includeAeLockFallback) {
+            setOption.set(CaptureRequest.CONTROL_AE_LOCK, true)
         }
+        if (focusSampled && lockedFocusDistance > 0f) {
+            setOption.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            setOption.set(CaptureRequest.LENS_FOCUS_DISTANCE, lockedFocusDistance)
+        }
+    }
+
+    private fun hasManualExposure(): Boolean = lockedExposureTimeNs > 0L && lockedSensitivity > 0
+
+    private fun rememberConvergedExposure(cam: Camera) {
+        if (hasManualExposure() || !supportsManualSensor(cam)) return
+        val exposureNs = latestExposureTimeNs
+        val sensitivity = latestSensitivity
+        if (exposureNs <= 0L || sensitivity <= 0) return
+        lockedExposureTimeNs = exposureNs
+        lockedSensitivity = sensitivity
+        val frameNs = latestFrameDurationNs
+        lockedFrameDurationNs = if (frameNs >= exposureNs) frameNs else exposureNs
+    }
+
+    private fun supportsManualSensor(cam: Camera): Boolean {
+        val caps = Camera2CameraInfo.from(cam.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+            ?: return false
+        return caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
+    }
+
+    private interface RequestOptionSetter {
+        fun <T : Any> set(key: CaptureRequest.Key<T>, value: T)
     }
 
     fun shutdown() {

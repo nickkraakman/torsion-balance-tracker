@@ -38,6 +38,7 @@ fun ExperimentsScreen(
     LaunchedEffect(Unit) { viewModel.refreshExperiments() }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
                 title = { Text("Experiments") },
