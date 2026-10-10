@@ -87,7 +87,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var scaleKnownMm: Double = 10.0
     @Volatile
     private var signNudgeDetector: SignNudgeDetector? = null
-    private var signNudgeArmed = false
 
     private var lastSampleEmitMs: Long = 0L
     private var openCvReady = false
@@ -228,7 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _recordingElapsedMs.value = timestampMs
         }
 
-        handleCalibrationFrame(result, captureNs)
+        handleCalibrationFrame(result)
     }
 
     private fun processLedRoi(gray: Mat, cal: CalibrationState): LedObservation? {
@@ -270,28 +269,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return obs
     }
 
-    private fun handleCalibrationFrame(result: TrackingResult, captureNs: Long) {
+    private fun handleCalibrationFrame(result: TrackingResult) {
         when (_calibrationStep.value) {
             CalibrationStep.SET_SIGN_NUDGE -> {
                 val detector = signNudgeDetector ?: return
-                val wasArmed = signNudgeArmed
-                when (val state = detector.process(result.xRelPx, captureNs / 1_000_000L)) {
-                    is SignNudgeDetector.State.Learning -> Unit
-                    is SignNudgeDetector.State.Armed -> if (!wasArmed) {
-                        signNudgeArmed = true
-                        _statusMessage.value = "Nudge the arm to the right (this sets the + direction)"
+                val sign = detector.process(result.xRelPx) ?: return
+                signNudgeDetector = null
+                viewModelScope.launch {
+                    calibrationStore.update {
+                        it.copy(signMultiplier = sign, calibrationComplete = true)
                     }
-                    is SignNudgeDetector.State.Detected -> {
-                        signNudgeDetector = null
-                        viewModelScope.launch {
-                            calibrationStore.update {
-                                it.copy(signMultiplier = state.sign, calibrationComplete = true)
-                            }
-                            _calibrationStep.value = CalibrationStep.DONE
-                            _appMode.value = AppMode.LIVE
-                            _statusMessage.value = "Calibration complete — ready to measure"
-                        }
-                    }
+                    _calibrationStep.value = CalibrationStep.DONE
+                    _appMode.value = AppMode.LIVE
+                    _statusMessage.value = "Calibration complete — ready to measure"
                 }
             }
             else -> Unit
@@ -514,10 +504,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun skipArmLengthAndContinue() {
-        signNudgeArmed = false
         signNudgeDetector = SignNudgeDetector()
         _calibrationStep.value = CalibrationStep.SET_SIGN_NUDGE
-        _statusMessage.value = "Don't touch the balance — measuring its resting wiggle…"
+        _statusMessage.value = "Nudge the arm to the right (this sets the + direction)"
     }
 
     fun setArmLength(mm: Double) {
