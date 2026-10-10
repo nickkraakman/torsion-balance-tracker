@@ -1,115 +1,67 @@
 package dev.qi.torsionbalance.vision
 
 import kotlin.math.abs
-import kotlin.math.exp
-import kotlin.math.max
 import kotlin.math.sign
 
 /**
- * Decides which way the user nudged the arm, without mistaking background wiggle for a nudge.
+ * Decides which way the user nudged the arm.
  *
- * First it watches the untouched arm for [quietWindowMs] to learn a resting baseline and the
- * wiggle amplitude (largest deviation from the mean). A nudge must then exceed
- * `max(minThresholdPx, noiseMultiplier * wiggle)` from the baseline, in the same direction,
- * on [sustainSamples] consecutive frames. While the arm stays inside that band the baseline
- * follows it slowly, so gradual drift is not read as a nudge either.
+ * The first sample is the rest position. A nudge is a move of at least [thresholdPx]
+ * from that position, held for [sustainFrames] frames in a row. One noisy frame, or a
+ * gap where a marker is lost, does not count. The rest position stays fixed, so the
+ * nudge is not eaten by a baseline that follows the arm.
  */
 class SignNudgeDetector(
-    private val quietWindowMs: Long = DEFAULT_QUIET_WINDOW_MS,
-    private val minQuietSamples: Int = DEFAULT_MIN_QUIET_SAMPLES,
-    private val minThresholdPx: Double = DEFAULT_MIN_THRESHOLD_PX,
-    private val noiseMultiplier: Double = DEFAULT_NOISE_MULTIPLIER,
-    private val sustainSamples: Int = DEFAULT_SUSTAIN_SAMPLES,
-    private val baselineTimeConstantMs: Double = DEFAULT_BASELINE_TIME_CONSTANT_MS,
+    private val thresholdPx: Double = DEFAULT_THRESHOLD_PX,
+    private val sustainFrames: Int = DEFAULT_SUSTAIN_FRAMES,
 ) {
-    sealed interface State {
-        /** Still measuring the resting wiggle; [progress] runs 0..1. */
-        data class Learning(val progress: Double) : State
-
-        /** Waiting for the nudge; deviations beyond [thresholdPx] count toward detection. */
-        data class Armed(val baselinePx: Double, val thresholdPx: Double) : State
-
-        /** [sign] is +1.0 when the nudge increased xRel, -1.0 when it decreased it. */
-        data class Detected(val sign: Double) : State
-    }
-
-    private val quietSamples = ArrayList<Double>()
-    private var quietStartMs: Long? = null
-    private var baseline = 0.0
-    private var threshold = 0.0
-    private var lastTimeMs = 0L
+    private var baseline: Double? = null
     private var excursionSign = 0.0
     private var excursionCount = 0
-    private var state: State = State.Learning(0.0)
+    private var detected: Double? = null
 
     fun reset() {
-        quietSamples.clear()
-        quietStartMs = null
+        baseline = null
         excursionSign = 0.0
         excursionCount = 0
-        state = State.Learning(0.0)
+        detected = null
     }
 
-    /** Feed one frame. Pass null when either marker was lost so a gap breaks a pending excursion. */
-    fun process(xRelPx: Double?, timeMs: Long): State {
-        val current = state
-        if (current is State.Detected) return current
+    /**
+     * Feed one frame. Pass null when either marker was lost.
+     * Returns +1.0 when xRel increased, -1.0 when it decreased, or null while waiting.
+     */
+    fun process(xRelPx: Double?): Double? {
+        detected?.let { return it }
         if (xRelPx == null) {
             excursionCount = 0
-            return current
+            return null
         }
-        state = when (current) {
-            is State.Learning -> learn(xRelPx, timeMs)
-            is State.Armed -> watch(xRelPx, timeMs)
-            is State.Detected -> current
+        val base = baseline
+        if (base == null) {
+            baseline = xRelPx
+            return null
         }
-        return state
-    }
-
-    private fun learn(x: Double, timeMs: Long): State {
-        val start = quietStartMs ?: timeMs.also { quietStartMs = it }
-        quietSamples.add(x)
-        val elapsed = timeMs - start
-        if (elapsed < quietWindowMs || quietSamples.size < minQuietSamples) {
-            val byTime = elapsed.toDouble() / quietWindowMs
-            val bySamples = quietSamples.size.toDouble() / minQuietSamples
-            return State.Learning(minOf(byTime, bySamples).coerceIn(0.0, 1.0))
-        }
-        baseline = quietSamples.average()
-        val wiggle = quietSamples.maxOf { abs(it - baseline) }
-        threshold = max(minThresholdPx, noiseMultiplier * wiggle)
-        lastTimeMs = timeMs
-        quietSamples.clear()
-        return State.Armed(baseline, threshold)
-    }
-
-    private fun watch(x: Double, timeMs: Long): State {
-        val deviation = x - baseline
-        if (abs(deviation) <= threshold) {
+        val deviation = xRelPx - base
+        if (abs(deviation) < thresholdPx) {
             excursionCount = 0
-            val dt = (timeMs - lastTimeMs).coerceAtLeast(0L).toDouble()
-            val alpha = 1.0 - exp(-dt / baselineTimeConstantMs)
-            baseline += alpha * deviation
-            lastTimeMs = timeMs
-            return State.Armed(baseline, threshold)
+            return null
         }
-        lastTimeMs = timeMs
-        val s = sign(deviation)
-        if (s != excursionSign) {
-            excursionSign = s
+        val direction = sign(deviation)
+        if (direction != excursionSign) {
+            excursionSign = direction
             excursionCount = 0
         }
         excursionCount++
-        if (excursionCount >= sustainSamples) return State.Detected(excursionSign)
-        return State.Armed(baseline, threshold)
+        if (excursionCount >= sustainFrames) {
+            detected = excursionSign
+        }
+        return detected
     }
 
     companion object {
-        const val DEFAULT_QUIET_WINDOW_MS = 1500L
-        const val DEFAULT_MIN_QUIET_SAMPLES = 15
-        const val DEFAULT_MIN_THRESHOLD_PX = 3.0
-        const val DEFAULT_NOISE_MULTIPLIER = 3.0
-        const val DEFAULT_SUSTAIN_SAMPLES = 4
-        const val DEFAULT_BASELINE_TIME_CONSTANT_MS = 1000.0
+        /** Well above the old 2 px check, which fired on resting tracker noise. */
+        const val DEFAULT_THRESHOLD_PX = 15.0
+        const val DEFAULT_SUSTAIN_FRAMES = 4
     }
 }
