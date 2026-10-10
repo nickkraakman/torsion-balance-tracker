@@ -34,6 +34,24 @@ enum class SampleRate {
     HZ_1,
 }
 
+/**
+ * How the arm-direction sign (+1 / -1) was obtained for the current session.
+ * Persisted signs reload as [SAVED]; CSV metadata uses the lowercase name.
+ */
+enum class SignSource {
+    /** No explicit sign yet — nudge or Settings choice required. */
+    NONE,
+    /** Loaded from DataStore (set in a prior session). */
+    SAVED,
+    /** Chosen manually in Settings. */
+    MANUAL,
+    /** Detected by [dev.qi.torsionbalance.vision.SignNudgeDetector] this session. */
+    NUDGED,
+    ;
+
+    fun csvValue(): String = name.lowercase()
+}
+
 data class Point2D(val x: Float, val y: Float)
 
 data class ScaleCalibrationOverlay(
@@ -83,6 +101,8 @@ data class CalibrationState(
     val mmPerPixel: Double = 0.0,
     val zeroXRelPx: Double = 0.0,
     val signMultiplier: Double = 1.0,
+    /** True after a nudge or manual Settings choice; false means the nudge step is still required. */
+    val signConfigured: Boolean = false,
     val armLengthMm: Double = 0.0,
     val armSeedX: Float = 0f,
     val armSeedY: Float = 0f,

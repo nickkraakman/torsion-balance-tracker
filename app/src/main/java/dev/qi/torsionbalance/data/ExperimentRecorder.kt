@@ -1,6 +1,7 @@
 package dev.qi.torsionbalance.data
 
 import android.content.Context
+import dev.qi.torsionbalance.SignSource
 import dev.qi.torsionbalance.TrackingResult
 import dev.qi.torsionbalance.vision.LedEdge
 import java.io.BufferedWriter
@@ -46,7 +47,11 @@ class ExperimentRecorder(private val context: Context) {
         return File(dir, "TorsionBalance").apply { mkdirs() }
     }
 
-    fun start(experimentName: String): File {
+    fun start(
+        experimentName: String,
+        signMultiplier: Double = 1.0,
+        signSource: SignSource = SignSource.SAVED,
+    ): File {
         synchronized(writerLock) {
             stopInternal(writeSummary = false)
             val safeName = experimentName.trim().replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "experiment" }
@@ -62,9 +67,13 @@ class ExperimentRecorder(private val context: Context) {
             triggerAccumulator = TriggerRunAccumulator()
             lastFlushMs = System.currentTimeMillis()
             currentFile = file
-            writer = BufferedWriter(FileWriter(file), 32 * 1024).also {
-                it.write(ExperimentCsvFormat.HEADER)
-                it.newLine()
+            writer = BufferedWriter(FileWriter(file), 32 * 1024).also { w ->
+                ExperimentCsvFormat.metadataLines(signMultiplier, signSource).forEach { line ->
+                    w.write(line)
+                    w.newLine()
+                }
+                w.write(ExperimentCsvFormat.HEADER)
+                w.newLine()
             }
             return file
         }
@@ -270,12 +279,13 @@ class ExperimentRecorder(private val context: Context) {
         var samples = 0
         var lastTs = 0L
         file.bufferedReader().useLines { lines ->
-            lines.drop(1).forEach { line ->
-                if (line.contains(",sample,")) samples++
-                line.split(",").firstOrNull()?.toLongOrNull()?.let { ts ->
-                    if (ts > lastTs) lastTs = ts
+            lines.dropWhile { it.startsWith("#") || it == ExperimentCsvFormat.HEADER }
+                .forEach { line ->
+                    if (line.contains(",sample,")) samples++
+                    line.split(",").firstOrNull()?.toLongOrNull()?.let { ts ->
+                        if (ts > lastTs) lastTs = ts
+                    }
                 }
-            }
         }
         return ExperimentFileInfo(
             name = file.nameWithoutExtension,
