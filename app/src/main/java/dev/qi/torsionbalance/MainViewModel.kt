@@ -17,6 +17,7 @@ import dev.qi.torsionbalance.vision.LedEdge
 import dev.qi.torsionbalance.vision.LedObservation
 import dev.qi.torsionbalance.vision.MarkerTracker
 import dev.qi.torsionbalance.vision.RoiMath
+import dev.qi.torsionbalance.vision.SignNudgeDetector
 import dev.qi.torsionbalance.vision.YPlaneMat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,7 +85,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val ledMonitor: StateFlow<LedMonitorState> = _ledMonitor.asStateFlow()
 
     var scaleKnownMm: Double = 10.0
-    private var signBaselineXRel: Double? = null
+    @Volatile
+    private var signNudgeDetector: SignNudgeDetector? = null
+    private var signNudgeArmed = false
 
     private var lastSampleEmitMs: Long = 0L
     private var openCvReady = false
@@ -225,7 +228,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _recordingElapsedMs.value = timestampMs
         }
 
-        handleCalibrationFrame(result)
+        handleCalibrationFrame(result, captureNs)
     }
 
     private fun processLedRoi(gray: Mat, cal: CalibrationState): LedObservation? {
@@ -267,19 +270,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return obs
     }
 
-    private fun handleCalibrationFrame(result: TrackingResult) {
+    private fun handleCalibrationFrame(result: TrackingResult, captureNs: Long) {
         when (_calibrationStep.value) {
             CalibrationStep.SET_SIGN_NUDGE -> {
-                val xRel = result.xRelPx ?: return
-                val baseline = signBaselineXRel ?: return
-                val delta = xRel - baseline
-                if (abs(delta) > 2.0) {
-                    val sign = if (delta > 0) 1.0 else -1.0
-                    viewModelScope.launch {
-                        calibrationStore.update { it.copy(signMultiplier = sign, calibrationComplete = true) }
-                        _calibrationStep.value = CalibrationStep.DONE
-                        _appMode.value = AppMode.LIVE
-                        _statusMessage.value = "Calibration complete — ready to measure"
+                val detector = signNudgeDetector ?: return
+                val wasArmed = signNudgeArmed
+                when (val state = detector.process(result.xRelPx, captureNs / 1_000_000L)) {
+                    is SignNudgeDetector.State.Learning -> Unit
+                    is SignNudgeDetector.State.Armed -> if (!wasArmed) {
+                        signNudgeArmed = true
+                        _statusMessage.value = "Nudge the arm to the right (this sets the + direction)"
+                    }
+                    is SignNudgeDetector.State.Detected -> {
+                        signNudgeDetector = null
+                        viewModelScope.launch {
+                            calibrationStore.update {
+                                it.copy(signMultiplier = state.sign, calibrationComplete = true)
+                            }
+                            _calibrationStep.value = CalibrationStep.DONE
+                            _appMode.value = AppMode.LIVE
+                            _statusMessage.value = "Calibration complete — ready to measure"
+                        }
                     }
                 }
             }
@@ -503,9 +514,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun skipArmLengthAndContinue() {
+        signNudgeArmed = false
+        signNudgeDetector = SignNudgeDetector()
         _calibrationStep.value = CalibrationStep.SET_SIGN_NUDGE
-        signBaselineXRel = _tracking.value?.xRelPx
-        _statusMessage.value = "Nudge the arm to the right (this sets the + direction)"
+        _statusMessage.value = "Don't touch the balance — measuring its resting wiggle…"
     }
 
     fun setArmLength(mm: Double) {
