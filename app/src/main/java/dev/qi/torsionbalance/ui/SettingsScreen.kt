@@ -82,7 +82,11 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    Button(onClick = onBack) { Text("Back") }
+                    Button(onClick = {
+                        // Persist pending LED threshold (toggle already writes immediately).
+                        viewModel.updateFlashSettings(flashEnabled, flashThreshold.toInt())
+                        onBack()
+                    }) { Text("Back") }
                 },
             )
         },
@@ -165,7 +169,11 @@ fun SettingsScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(
                     checked = flashEnabled,
-                    onCheckedChange = { flashEnabled = it },
+                    onCheckedChange = { enabled ->
+                        flashEnabled = enabled
+                        // Persist immediately — local-only state was discarded on navigate/ROI set.
+                        viewModel.updateFlashSettings(enabled, flashThreshold.toInt())
+                    },
                 )
                 Text(
                     if (flashEnabled) "Enabled" else "Disabled",
@@ -183,6 +191,8 @@ fun SettingsScreen(
                     viewModel.updateFlashSettings(flashEnabled, flashThreshold.toInt())
                 }) { Text("Apply LED settings") }
                 Button(onClick = {
+                    // Flush toggle + threshold before leaving so ROI set cannot drop them.
+                    viewModel.updateFlashSettings(flashEnabled, flashThreshold.toInt())
                     viewModel.armFlashRoiTap()
                     onBack()
                 }) { Text("Set LED region") }

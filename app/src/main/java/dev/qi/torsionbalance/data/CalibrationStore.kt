@@ -2,6 +2,7 @@ package dev.qi.torsionbalance.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
@@ -11,8 +12,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.qi.torsionbalance.CalibrationState
-import dev.qi.torsionbalance.SampleRate
-import dev.qi.torsionbalance.vision.KalmanFilter1D
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -21,25 +20,25 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class CalibrationStore(private val context: Context) {
 
     private object Keys {
-        val MM_PER_PIXEL = doublePreferencesKey("mm_per_pixel")
-        val ZERO_X_REL_PX = doublePreferencesKey("zero_x_rel_px")
-        val SIGN_MULTIPLIER = doublePreferencesKey("sign_multiplier")
-        val ARM_LENGTH_MM = doublePreferencesKey("arm_length_mm")
-        val ARM_SEED_X = floatPreferencesKey("arm_seed_x")
-        val ARM_SEED_Y = floatPreferencesKey("arm_seed_y")
-        val REF_SEED_X = floatPreferencesKey("ref_seed_x")
-        val REF_SEED_Y = floatPreferencesKey("ref_seed_y")
-        val BLOB_AREA_MIN = doublePreferencesKey("blob_area_min")
-        val BLOB_AREA_MAX = doublePreferencesKey("blob_area_max")
-        val CAMERA_LOCKED = booleanPreferencesKey("camera_locked")
-        val CALIBRATION_COMPLETE = booleanPreferencesKey("calibration_complete")
-        val SAMPLE_RATE = stringPreferencesKey("sample_rate")
-        val KALMAN_PROCESS_NOISE = doublePreferencesKey("kalman_process_noise")
-        val KALMAN_MEASUREMENT_NOISE = doublePreferencesKey("kalman_measurement_noise")
-        val FLASH_AUTO_MARK = booleanPreferencesKey("flash_auto_mark")
-        val FLASH_ROI_X = intPreferencesKey("flash_roi_x")
-        val FLASH_ROI_Y = intPreferencesKey("flash_roi_y")
-        val FLASH_THRESHOLD = intPreferencesKey("flash_threshold")
+        val MM_PER_PIXEL = doublePreferencesKey(CalibrationPreferences.Keys.MM_PER_PIXEL)
+        val ZERO_X_REL_PX = doublePreferencesKey(CalibrationPreferences.Keys.ZERO_X_REL_PX)
+        val SIGN_MULTIPLIER = doublePreferencesKey(CalibrationPreferences.Keys.SIGN_MULTIPLIER)
+        val ARM_LENGTH_MM = doublePreferencesKey(CalibrationPreferences.Keys.ARM_LENGTH_MM)
+        val ARM_SEED_X = floatPreferencesKey(CalibrationPreferences.Keys.ARM_SEED_X)
+        val ARM_SEED_Y = floatPreferencesKey(CalibrationPreferences.Keys.ARM_SEED_Y)
+        val REF_SEED_X = floatPreferencesKey(CalibrationPreferences.Keys.REF_SEED_X)
+        val REF_SEED_Y = floatPreferencesKey(CalibrationPreferences.Keys.REF_SEED_Y)
+        val BLOB_AREA_MIN = doublePreferencesKey(CalibrationPreferences.Keys.BLOB_AREA_MIN)
+        val BLOB_AREA_MAX = doublePreferencesKey(CalibrationPreferences.Keys.BLOB_AREA_MAX)
+        val CAMERA_LOCKED = booleanPreferencesKey(CalibrationPreferences.Keys.CAMERA_LOCKED)
+        val CALIBRATION_COMPLETE = booleanPreferencesKey(CalibrationPreferences.Keys.CALIBRATION_COMPLETE)
+        val SAMPLE_RATE = stringPreferencesKey(CalibrationPreferences.Keys.SAMPLE_RATE)
+        val KALMAN_PROCESS_NOISE = doublePreferencesKey(CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE)
+        val KALMAN_MEASUREMENT_NOISE = doublePreferencesKey(CalibrationPreferences.Keys.KALMAN_MEASUREMENT_NOISE)
+        val FLASH_AUTO_MARK = booleanPreferencesKey(CalibrationPreferences.Keys.FLASH_AUTO_MARK)
+        val FLASH_ROI_X = intPreferencesKey(CalibrationPreferences.Keys.FLASH_ROI_X)
+        val FLASH_ROI_Y = intPreferencesKey(CalibrationPreferences.Keys.FLASH_ROI_Y)
+        val FLASH_THRESHOLD = intPreferencesKey(CalibrationPreferences.Keys.FLASH_THRESHOLD)
     }
 
     val calibrationFlow: Flow<CalibrationState> = context.dataStore.data.map { prefs ->
@@ -58,50 +57,52 @@ class CalibrationStore(private val context: Context) {
     }
 
     private fun stateFromPrefs(prefs: Preferences): CalibrationState {
-        return CalibrationState(
-            mmPerPixel = prefs[Keys.MM_PER_PIXEL] ?: 0.0,
-            zeroXRelPx = prefs[Keys.ZERO_X_REL_PX] ?: 0.0,
-            signMultiplier = prefs[Keys.SIGN_MULTIPLIER] ?: 1.0,
-            armLengthMm = prefs[Keys.ARM_LENGTH_MM] ?: 0.0,
-            armSeedX = prefs[Keys.ARM_SEED_X] ?: 0f,
-            armSeedY = prefs[Keys.ARM_SEED_Y] ?: 0f,
-            refSeedX = prefs[Keys.REF_SEED_X] ?: 0f,
-            refSeedY = prefs[Keys.REF_SEED_Y] ?: 0f,
-            blobAreaMin = prefs[Keys.BLOB_AREA_MIN] ?: 20.0,
-            blobAreaMax = prefs[Keys.BLOB_AREA_MAX] ?: 8000.0,
-            cameraLocked = prefs[Keys.CAMERA_LOCKED] ?: false,
-            calibrationComplete = prefs[Keys.CALIBRATION_COMPLETE] ?: false,
-            sampleRate = prefs[Keys.SAMPLE_RATE]?.let { name ->
-                runCatching { SampleRate.valueOf(name) }.getOrDefault(SampleRate.EVERY_FRAME)
-            } ?: SampleRate.EVERY_FRAME,
-            kalmanProcessNoise = prefs[Keys.KALMAN_PROCESS_NOISE] ?: KalmanFilter1D.DEFAULT_PROCESS_NOISE,
-            kalmanMeasurementNoise = prefs[Keys.KALMAN_MEASUREMENT_NOISE] ?: KalmanFilter1D.DEFAULT_MEASUREMENT_NOISE,
-            flashAutoMark = prefs[Keys.FLASH_AUTO_MARK] ?: false,
-            flashRoiX = prefs[Keys.FLASH_ROI_X] ?: -1,
-            flashRoiY = prefs[Keys.FLASH_ROI_Y] ?: -1,
-            flashThreshold = prefs[Keys.FLASH_THRESHOLD] ?: 40,
+        return CalibrationPreferences.stateFromMap(
+            mapOf(
+                CalibrationPreferences.Keys.MM_PER_PIXEL to prefs[Keys.MM_PER_PIXEL],
+                CalibrationPreferences.Keys.ZERO_X_REL_PX to prefs[Keys.ZERO_X_REL_PX],
+                CalibrationPreferences.Keys.SIGN_MULTIPLIER to prefs[Keys.SIGN_MULTIPLIER],
+                CalibrationPreferences.Keys.ARM_LENGTH_MM to prefs[Keys.ARM_LENGTH_MM],
+                CalibrationPreferences.Keys.ARM_SEED_X to prefs[Keys.ARM_SEED_X],
+                CalibrationPreferences.Keys.ARM_SEED_Y to prefs[Keys.ARM_SEED_Y],
+                CalibrationPreferences.Keys.REF_SEED_X to prefs[Keys.REF_SEED_X],
+                CalibrationPreferences.Keys.REF_SEED_Y to prefs[Keys.REF_SEED_Y],
+                CalibrationPreferences.Keys.BLOB_AREA_MIN to prefs[Keys.BLOB_AREA_MIN],
+                CalibrationPreferences.Keys.BLOB_AREA_MAX to prefs[Keys.BLOB_AREA_MAX],
+                CalibrationPreferences.Keys.CAMERA_LOCKED to prefs[Keys.CAMERA_LOCKED],
+                CalibrationPreferences.Keys.CALIBRATION_COMPLETE to prefs[Keys.CALIBRATION_COMPLETE],
+                CalibrationPreferences.Keys.SAMPLE_RATE to prefs[Keys.SAMPLE_RATE],
+                CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE to prefs[Keys.KALMAN_PROCESS_NOISE],
+                CalibrationPreferences.Keys.KALMAN_MEASUREMENT_NOISE to prefs[Keys.KALMAN_MEASUREMENT_NOISE],
+                CalibrationPreferences.Keys.FLASH_AUTO_MARK to prefs[Keys.FLASH_AUTO_MARK],
+                CalibrationPreferences.Keys.FLASH_ROI_X to prefs[Keys.FLASH_ROI_X],
+                CalibrationPreferences.Keys.FLASH_ROI_Y to prefs[Keys.FLASH_ROI_Y],
+                CalibrationPreferences.Keys.FLASH_THRESHOLD to prefs[Keys.FLASH_THRESHOLD],
+            ),
         )
     }
 
-    private fun writeState(prefs: androidx.datastore.preferences.core.MutablePreferences, next: CalibrationState) {
-        prefs[Keys.MM_PER_PIXEL] = next.mmPerPixel
-        prefs[Keys.ZERO_X_REL_PX] = next.zeroXRelPx
-        prefs[Keys.SIGN_MULTIPLIER] = next.signMultiplier
-        prefs[Keys.ARM_LENGTH_MM] = next.armLengthMm
-        prefs[Keys.ARM_SEED_X] = next.armSeedX
-        prefs[Keys.ARM_SEED_Y] = next.armSeedY
-        prefs[Keys.REF_SEED_X] = next.refSeedX
-        prefs[Keys.REF_SEED_Y] = next.refSeedY
-        prefs[Keys.BLOB_AREA_MIN] = next.blobAreaMin
-        prefs[Keys.BLOB_AREA_MAX] = next.blobAreaMax
-        prefs[Keys.CAMERA_LOCKED] = next.cameraLocked
-        prefs[Keys.CALIBRATION_COMPLETE] = next.calibrationComplete
-        prefs[Keys.SAMPLE_RATE] = next.sampleRate.name
-        prefs[Keys.KALMAN_PROCESS_NOISE] = next.kalmanProcessNoise
-        prefs[Keys.KALMAN_MEASUREMENT_NOISE] = next.kalmanMeasurementNoise
-        prefs[Keys.FLASH_AUTO_MARK] = next.flashAutoMark
-        prefs[Keys.FLASH_ROI_X] = next.flashRoiX
-        prefs[Keys.FLASH_ROI_Y] = next.flashRoiY
-        prefs[Keys.FLASH_THRESHOLD] = next.flashThreshold
+    private fun writeState(prefs: MutablePreferences, next: CalibrationState) {
+        val encoded = CalibrationPreferences.toMap(next)
+        prefs[Keys.MM_PER_PIXEL] = encoded[CalibrationPreferences.Keys.MM_PER_PIXEL] as Double
+        prefs[Keys.ZERO_X_REL_PX] = encoded[CalibrationPreferences.Keys.ZERO_X_REL_PX] as Double
+        prefs[Keys.SIGN_MULTIPLIER] = encoded[CalibrationPreferences.Keys.SIGN_MULTIPLIER] as Double
+        prefs[Keys.ARM_LENGTH_MM] = encoded[CalibrationPreferences.Keys.ARM_LENGTH_MM] as Double
+        prefs[Keys.ARM_SEED_X] = encoded[CalibrationPreferences.Keys.ARM_SEED_X] as Float
+        prefs[Keys.ARM_SEED_Y] = encoded[CalibrationPreferences.Keys.ARM_SEED_Y] as Float
+        prefs[Keys.REF_SEED_X] = encoded[CalibrationPreferences.Keys.REF_SEED_X] as Float
+        prefs[Keys.REF_SEED_Y] = encoded[CalibrationPreferences.Keys.REF_SEED_Y] as Float
+        prefs[Keys.BLOB_AREA_MIN] = encoded[CalibrationPreferences.Keys.BLOB_AREA_MIN] as Double
+        prefs[Keys.BLOB_AREA_MAX] = encoded[CalibrationPreferences.Keys.BLOB_AREA_MAX] as Double
+        prefs[Keys.CAMERA_LOCKED] = encoded[CalibrationPreferences.Keys.CAMERA_LOCKED] as Boolean
+        prefs[Keys.CALIBRATION_COMPLETE] = encoded[CalibrationPreferences.Keys.CALIBRATION_COMPLETE] as Boolean
+        prefs[Keys.SAMPLE_RATE] = encoded[CalibrationPreferences.Keys.SAMPLE_RATE] as String
+        prefs[Keys.KALMAN_PROCESS_NOISE] = encoded[CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE] as Double
+        prefs[Keys.KALMAN_MEASUREMENT_NOISE] =
+            encoded[CalibrationPreferences.Keys.KALMAN_MEASUREMENT_NOISE] as Double
+        prefs[Keys.FLASH_AUTO_MARK] = encoded[CalibrationPreferences.Keys.FLASH_AUTO_MARK] as Boolean
+        prefs[Keys.FLASH_ROI_X] = encoded[CalibrationPreferences.Keys.FLASH_ROI_X] as Int
+        prefs[Keys.FLASH_ROI_Y] = encoded[CalibrationPreferences.Keys.FLASH_ROI_Y] as Int
+        prefs[Keys.FLASH_THRESHOLD] = encoded[CalibrationPreferences.Keys.FLASH_THRESHOLD] as Int
     }
 }

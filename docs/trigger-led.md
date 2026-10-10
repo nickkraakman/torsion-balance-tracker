@@ -16,12 +16,13 @@ Example: 67 Hz × 3450 ms / 1000 ≈ 231 sparks.
 
 1. Complete beam calibration and **Lock Camera** (AE/AF lock) so the LED does not pull exposure.
 2. Mount a bright LED in view, away from both tracking dots.
-3. Settings → **Set LED region** → tap the LED on the preview (LED should be **off**).
-4. Enable **Trigger LED logging** and set the on-threshold so that:
+3. Settings → enable **Trigger LED logging** (the switch saves immediately). Optionally tune the on-threshold and tap **Apply LED settings**.
+4. Settings → **Set LED region** → tap the LED on the preview (LED should be **off**). Pending LED settings are flushed before leaving Settings.
+5. Confirm the threshold so that:
    - LED off: Δ stays near 0
    - LED held: Δ is well above the threshold  
    Live mean / baseline / Δ appear on the preview next to the ROI box and in Settings.
-5. Record as usual. Hold the spark trigger during the run; release between presses.
+6. Record as usual. Hold the spark trigger during the run; release between presses.
 
 If the LED is already on when you first set the ROI, wait until it is off so the dark baseline can be learned. Detection also runs on the live preview (not only while recording), so a hold that starts just before Record is still logged as ON on the first recorded frame.
 
