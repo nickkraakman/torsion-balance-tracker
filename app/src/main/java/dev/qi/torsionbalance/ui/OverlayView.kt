@@ -52,11 +52,13 @@ fun TrackingOverlay(
 
     val armColor = when (tr?.flags) {
         TrackingFlags.OK -> Color(0xFF4CAF50)
+        TrackingFlags.HELD -> Color(0xFFFFC107)
         TrackingFlags.REF_LOST -> Color(0xFFFFC107)
         null -> Color(0xFF4CAF50)
         else -> Color(0xFFE53935)
     }
-    val refColor = if (tr?.reference?.found != false) Color(0xFF42A5F5) else Color(0xFFE53935)
+    val refVisible = tr?.reference?.found == true || tr?.reference?.held == true
+    val refColor = if (refVisible) Color(0xFF42A5F5) else Color(0xFFE53935)
 
     Canvas(modifier = modifier) {
         scaleOverlay?.let { overlay ->
@@ -200,9 +202,10 @@ fun TrackingOverlay(
             }
         }
 
-        if (tr != null && tr.reference.found) {
-            val zeroX = (tr.reference.x + calibration.zeroXRelPx).toFloat()
-            val (zx, _) = mapper.imageToView(zeroX, tr.reference.y)
+        val refMarker = tr?.reference?.takeIf { it.found || it.held }
+        if (refMarker != null) {
+            val zeroX = (refMarker.x + calibration.zeroXRelPx).toFloat()
+            val (zx, _) = mapper.imageToView(zeroX, refMarker.y)
             drawLine(
                 color = Color.White.copy(alpha = 0.5f),
                 start = Offset(zx, 0f),
@@ -210,10 +213,7 @@ fun TrackingOverlay(
                 strokeWidth = 2f,
                 pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f)),
             )
-        }
-
-        if (tr != null && tr.reference.found) {
-            val (rx, ry) = mapper.imageToView(tr.reference.x, tr.reference.y)
+            val (rx, ry) = mapper.imageToView(refMarker.x, refMarker.y)
             drawLine(refColor, Offset(rx - 20f, ry), Offset(rx + 20f, ry), strokeWidth = 3f)
             drawLine(refColor, Offset(rx, ry - 20f), Offset(rx, ry + 20f), strokeWidth = 3f)
         } else if (appMode == AppMode.CALIBRATE && calibration.refSeedX > 0f) {
@@ -222,8 +222,9 @@ fun TrackingOverlay(
             drawLine(refColor, Offset(rx, ry - 20f), Offset(rx, ry + 20f), strokeWidth = 3f)
         }
 
-        if (tr != null && tr.arm.found) {
-            val (ax, ay) = mapper.imageToView(tr.arm.x, tr.arm.y)
+        val armMarker = tr?.arm?.takeIf { it.found || it.held }
+        if (armMarker != null) {
+            val (ax, ay) = mapper.imageToView(armMarker.x, armMarker.y)
             drawCrosshair(armColor, ax, ay, 24f, 4f)
             drawCircle(
                 color = armColor,
@@ -277,6 +278,7 @@ fun DisplacementReadout(
         tr?.flags == TrackingFlags.ARM_LOST ||
             tr?.flags == TrackingFlags.BOTH_LOST
         )
+    val held = isCalibrated && tr?.flags == TrackingFlags.HELD
     val refLost = isCalibrated && tr?.flags == TrackingFlags.REF_LOST
 
     androidx.compose.foundation.layout.Column(modifier = modifier) {
@@ -284,6 +286,7 @@ fun DisplacementReadout(
             !isCalibrated -> "--- mm"
             tr == null -> "--- mm"
             lost -> "LOST"
+            held -> "HELD"
             disp != null -> formatDisplacementMm(disp)
             else -> "--- mm"
         }

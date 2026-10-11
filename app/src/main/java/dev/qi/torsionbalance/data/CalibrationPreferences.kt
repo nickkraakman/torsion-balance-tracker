@@ -3,6 +3,7 @@ package dev.qi.torsionbalance.data
 import dev.qi.torsionbalance.CalibrationState
 import dev.qi.torsionbalance.SampleRate
 import dev.qi.torsionbalance.vision.KalmanFilter1D
+import dev.qi.torsionbalance.vision.MarkerTrackLogic
 
 /**
  * Pure encode/decode for [CalibrationState] preference keys.
@@ -23,6 +24,10 @@ object CalibrationPreferences {
         const val BLOB_AREA_MIN = "blob_area_min"
         const val BLOB_AREA_MAX = "blob_area_max"
         const val CAMERA_LOCKED = "camera_locked"
+        const val EXPOSURE_TIME_NS = "exposure_time_ns"
+        const val ISO_SENSITIVITY = "iso_sensitivity"
+        const val FRAME_DURATION_NS = "frame_duration_ns"
+        const val FOCUS_DISTANCE = "focus_distance"
         const val CALIBRATION_COMPLETE = "calibration_complete"
         const val SAMPLE_RATE = "sample_rate"
         const val KALMAN_PROCESS_NOISE = "kalman_process_noise"
@@ -31,6 +36,9 @@ object CalibrationPreferences {
         const val FLASH_ROI_X = "flash_roi_x"
         const val FLASH_ROI_Y = "flash_roi_y"
         const val FLASH_THRESHOLD = "flash_threshold"
+        const val LOST_FRAME_THRESHOLD = "lost_frame_threshold"
+        const val ARM_JUMP_MAX_PX = "arm_jump_max_px"
+        const val REF_JUMP_MAX_PX = "ref_jump_max_px"
     }
 
     fun stateFromMap(prefs: Map<String, Any?>): CalibrationState {
@@ -51,6 +59,10 @@ object CalibrationPreferences {
             blobAreaMin = prefs.doubleOr(Keys.BLOB_AREA_MIN, 20.0),
             blobAreaMax = prefs.doubleOr(Keys.BLOB_AREA_MAX, 8000.0),
             cameraLocked = prefs.booleanOr(Keys.CAMERA_LOCKED, false),
+            exposureTimeNs = prefs.longOr(Keys.EXPOSURE_TIME_NS, 0L),
+            isoSensitivity = prefs.intOr(Keys.ISO_SENSITIVITY, 0),
+            frameDurationNs = prefs.longOr(Keys.FRAME_DURATION_NS, 0L),
+            focusDistance = prefs.floatOr(Keys.FOCUS_DISTANCE, 0f),
             calibrationComplete = prefs.booleanOr(Keys.CALIBRATION_COMPLETE, false),
             sampleRate = (prefs[Keys.SAMPLE_RATE] as? String)?.let { name ->
                 runCatching { SampleRate.valueOf(name) }.getOrDefault(SampleRate.EVERY_FRAME)
@@ -67,6 +79,18 @@ object CalibrationPreferences {
             flashRoiX = prefs.intOr(Keys.FLASH_ROI_X, -1),
             flashRoiY = prefs.intOr(Keys.FLASH_ROI_Y, -1),
             flashThreshold = prefs.intOr(Keys.FLASH_THRESHOLD, 40),
+            lostFrameThreshold = prefs.intOr(
+                Keys.LOST_FRAME_THRESHOLD,
+                MarkerTrackLogic.DEFAULT_LOST_FRAME_THRESHOLD,
+            ),
+            armJumpMaxPx = prefs.floatOr(
+                Keys.ARM_JUMP_MAX_PX,
+                MarkerTrackLogic.DEFAULT_ARM_JUMP_MAX_PX,
+            ),
+            refJumpMaxPx = prefs.floatOr(
+                Keys.REF_JUMP_MAX_PX,
+                MarkerTrackLogic.DEFAULT_REF_JUMP_MAX_PX,
+            ),
         )
     }
 
@@ -84,6 +108,10 @@ object CalibrationPreferences {
             Keys.BLOB_AREA_MIN to state.blobAreaMin,
             Keys.BLOB_AREA_MAX to state.blobAreaMax,
             Keys.CAMERA_LOCKED to state.cameraLocked,
+            Keys.EXPOSURE_TIME_NS to state.exposureTimeNs,
+            Keys.ISO_SENSITIVITY to state.isoSensitivity,
+            Keys.FRAME_DURATION_NS to state.frameDurationNs,
+            Keys.FOCUS_DISTANCE to state.focusDistance,
             Keys.CALIBRATION_COMPLETE to state.calibrationComplete,
             Keys.SAMPLE_RATE to state.sampleRate.name,
             Keys.KALMAN_PROCESS_NOISE to state.kalmanProcessNoise,
@@ -92,6 +120,9 @@ object CalibrationPreferences {
             Keys.FLASH_ROI_X to state.flashRoiX,
             Keys.FLASH_ROI_Y to state.flashRoiY,
             Keys.FLASH_THRESHOLD to state.flashThreshold,
+            Keys.LOST_FRAME_THRESHOLD to state.lostFrameThreshold,
+            Keys.ARM_JUMP_MAX_PX to state.armJumpMaxPx,
+            Keys.REF_JUMP_MAX_PX to state.refJumpMaxPx,
         )
     }
 
@@ -124,6 +155,13 @@ object CalibrationPreferences {
         when (val v = this[key]) {
             is Int -> v
             is Number -> v.toInt()
+            else -> default
+        }
+
+    private fun Map<String, Any?>.longOr(key: String, default: Long): Long =
+        when (val v = this[key]) {
+            is Long -> v
+            is Number -> v.toLong()
             else -> default
         }
 

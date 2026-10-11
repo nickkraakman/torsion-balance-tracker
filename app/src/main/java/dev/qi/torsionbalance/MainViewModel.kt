@@ -7,6 +7,7 @@ import androidx.camera.core.ImageProxy
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.qi.torsionbalance.camera.CameraController
+import dev.qi.torsionbalance.camera.LockedCameraSettings
 import dev.qi.torsionbalance.camera.PreviewCoordinateMapper
 import dev.qi.torsionbalance.data.CalibrationStore
 import dev.qi.torsionbalance.data.ExperimentCsvFormat
@@ -16,6 +17,7 @@ import dev.qi.torsionbalance.data.TriggerRunAccumulator
 import dev.qi.torsionbalance.vision.FlashDetector
 import dev.qi.torsionbalance.vision.LedEdge
 import dev.qi.torsionbalance.vision.LedObservation
+import dev.qi.torsionbalance.vision.MarkerTrackLogic
 import dev.qi.torsionbalance.vision.MarkerTracker
 import dev.qi.torsionbalance.vision.RoiMath
 import dev.qi.torsionbalance.vision.SignNudgeDetector
@@ -117,6 +119,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _calibration.value = state
                 hydrateSignSource(state)
                 tracker.setKalmanParams(state.kalmanProcessNoise, state.kalmanMeasurementNoise)
+                tracker.updateConfig(
+                    MarkerTrackLogic.Config(
+                        lostFrameThreshold = state.lostFrameThreshold,
+                        armJumpMaxPx = state.armJumpMaxPx,
+                        refJumpMaxPx = state.refJumpMaxPx,
+                    ),
+                )
                 flashDetector.threshold = state.flashThreshold.toDouble()
             }
         }
@@ -481,9 +490,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun lockCamera() {
         viewModelScope.launch {
-            _statusMessage.value = "Sampling exposure and focus…"
-            val focusSampled = cameraController.sampleAndLock()
-            calibrationStore.update { it.copy(cameraLocked = true) }
+            _statusMessage.value = "Sampling exposure and focus on arm marker…"
+            val cal = _calibration.value
+            val (meterX, meterY) = armMeteringNorm(cal)
+            val focusSampled = cameraController.sampleAndLock(meterX, meterY)
+            val locked = cameraController.currentLockedSettings()
+            calibrationStore.update {
+                it.copy(
+                    cameraLocked = true,
+                    exposureTimeNs = locked?.exposureTimeNs ?: it.exposureTimeNs,
+                    isoSensitivity = locked?.sensitivity ?: it.isoSensitivity,
+                    frameDurationNs = locked?.frameDurationNs ?: it.frameDurationNs,
+                    focusDistance = locked?.focusDistance ?: it.focusDistance,
+                )
+            }
             retuneBlobAreasAfterLock()
             _calibrationStep.value = CalibrationStep.SET_ARM_LENGTH
             _statusMessage.value = if (focusSampled) {
@@ -492,6 +512,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "Camera locked (AE only — focus not fixed). Optional: set arm length, then continue"
             }
         }
+    }
+
+    /** Normalized (0..1) AE/AF metering point on the arm marker in analysis-frame space. */
+    private fun armMeteringNorm(cal: CalibrationState): Pair<Float, Float> {
+        val w = lastFrameWidth
+        val h = lastFrameHeight
+        if (w <= 0 || h <= 0 || cal.armSeedX <= 0f || cal.armSeedY <= 0f) {
+            return 0.5f to 0.5f
+        }
+        return (cal.armSeedX / w).coerceIn(0.05f, 0.95f) to
+            (cal.armSeedY / h).coerceIn(0.05f, 0.95f)
     }
 
     private suspend fun retuneBlobAreasAfterLock() {
@@ -720,6 +751,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateTrackingRobustness(
+        lostFrameThreshold: Int,
+        armJumpMaxPx: Float,
+        refJumpMaxPx: Float,
+    ) {
+        viewModelScope.launch {
+            calibrationStore.update {
+                it.copy(
+                    lostFrameThreshold = lostFrameThreshold.coerceIn(1, 60),
+                    armJumpMaxPx = armJumpMaxPx.coerceIn(1f, 200f),
+                    refJumpMaxPx = refJumpMaxPx.coerceIn(1f, 50f),
+                )
+            }
+        }
+    }
+
     fun updateKalmanParams(processNoise: Double, measurementNoise: Double) {
         viewModelScope.launch {
             calibrationStore.update {
@@ -755,8 +802,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreCameraLockIfNeeded() {
         viewModelScope.launch {
-            if (_calibration.value.cameraLocked && !cameraController.isLocked) {
-                cameraController.sampleAndLock()
+            val cal = _calibration.value
+            if (!cal.cameraLocked || cameraController.isLocked) return@launch
+            if (cal.exposureTimeNs > 0L && cal.isoSensitivity > 0) {
+                // Prefer persisted manual AE/focus — do not re-meter (avoids centre AE drift).
+                val ok = cameraController.restorePersistedLock(
+                    LockedCameraSettings(
+                        exposureTimeNs = cal.exposureTimeNs,
+                        sensitivity = cal.isoSensitivity,
+                        frameDurationNs = cal.frameDurationNs,
+                        focusDistance = cal.focusDistance,
+                    ),
+                )
+                if (ok) {
+                    _statusMessage.value = "Camera lock restored from calibration"
+                    return@launch
+                }
+            }
+            // Legacy calibrations without persisted AE: meter once on the arm, then persist.
+            val (meterX, meterY) = armMeteringNorm(cal)
+            cameraController.sampleAndLock(meterX, meterY)
+            cameraController.currentLockedSettings()?.let { locked ->
+                calibrationStore.update {
+                    it.copy(
+                        exposureTimeNs = locked.exposureTimeNs,
+                        isoSensitivity = locked.sensitivity,
+                        frameDurationNs = locked.frameDurationNs,
+                        focusDistance = locked.focusDistance,
+                    )
+                }
             }
         }
     }

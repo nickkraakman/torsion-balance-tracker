@@ -36,6 +36,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
+data class LockedCameraSettings(
+    val exposureTimeNs: Long,
+    val sensitivity: Int,
+    val frameDurationNs: Long,
+    val focusDistance: Float,
+)
+
 @OptIn(ExperimentalCamera2Interop::class)
 class CameraController(
     private val context: Context,
@@ -106,6 +113,16 @@ class CameraController(
         )
         .build()
 
+    fun currentLockedSettings(): LockedCameraSettings? {
+        if (!hasManualExposure()) return null
+        return LockedCameraSettings(
+            exposureTimeNs = lockedExposureTimeNs,
+            sensitivity = lockedSensitivity,
+            frameDurationNs = lockedFrameDurationNs,
+            focusDistance = if (focusSampled) lockedFocusDistance else 0f,
+        )
+    }
+
     suspend fun bind(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
@@ -135,14 +152,21 @@ class CameraController(
     }
 
     /**
-     * Wait for auto-exposure/focus to settle, sample focus distance, then lock AE (and AF if sampled).
+     * Wait for auto-exposure/focus to settle on the arm-marker region, sample focus,
+     * then lock AE (manual), AF (if sampled), and AWB.
+     *
+     * [meterNormX]/[meterNormY] are 0..1 fractions of the analysis/preview frame
+     * (arm marker). Defaults to frame centre only when the arm seed is unknown.
      */
-    suspend fun sampleAndLock(): Boolean {
+    suspend fun sampleAndLock(
+        meterNormX: Float = 0.5f,
+        meterNormY: Float = 0.5f,
+    ): Boolean {
         sessionMutex.withLock {
             val cam = camera ?: return false
             val camera2Control = Camera2CameraControl.from(cam.cameraControl)
 
-            triggerCenterAutofocus(cam)
+            triggerMeteringAt(cam, meterNormX, meterNormY)
             delay(AE_WARMUP_MS)
 
             synchronized(focusSamples) { focusSamples.clear() }
@@ -169,6 +193,36 @@ class CameraController(
         }
     }
 
+    /**
+     * Restore a previously persisted manual AE + focus lock without re-metering.
+     * Avoids the restart path that used to resample AE at frame centre.
+     */
+    suspend fun restorePersistedLock(settings: LockedCameraSettings): Boolean {
+        sessionMutex.withLock {
+            if (settings.exposureTimeNs <= 0L || settings.sensitivity <= 0) return false
+            lockedExposureTimeNs = settings.exposureTimeNs
+            lockedSensitivity = settings.sensitivity
+            lockedFrameDurationNs = settings.frameDurationNs.coerceAtLeast(settings.exposureTimeNs)
+            if (settings.focusDistance > 0f) {
+                lockedFocusDistance = settings.focusDistance
+                focusSampled = true
+            } else {
+                focusSampled = false
+                lockedFocusDistance = 0f
+            }
+            isLocked = true
+            val owner = boundLifecycleOwner
+            val view = boundPreviewView
+            val cb = frameCallback
+            val provider = cameraProvider
+            if (owner != null && view != null && cb != null && provider != null) {
+                bindUseCases(provider, owner, view, cb)
+            }
+            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
+            return true
+        }
+    }
+
     suspend fun unlock() {
         sessionMutex.withLock {
             isLocked = false
@@ -187,11 +241,14 @@ class CameraController(
         }
     }
 
-    private fun triggerCenterAutofocus(cam: Camera) {
+    private fun triggerMeteringAt(cam: Camera, normX: Float, normY: Float) {
+        val x = normX.coerceIn(0.05f, 0.95f)
+        val y = normY.coerceIn(0.05f, 0.95f)
         val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+        val point = factory.createPoint(x, y)
         val action = FocusMeteringAction.Builder(
-            factory.createPoint(0.5f, 0.5f),
-            FocusMeteringAction.FLAG_AF,
+            point,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE,
         )
             .setAutoCancelDuration(AE_WARMUP_MS, TimeUnit.MILLISECONDS)
             .build()
@@ -276,7 +333,7 @@ class CameraController(
     }
 
     /**
-     * Exposure and focus to hold while locked.
+     * Exposure, focus, and AWB to hold while locked.
      *
      * [includeAeLockFallback] is only safe on a session that has already metered.
      * A new session must not set [CaptureRequest.CONTROL_AE_LOCK] until then: the
@@ -294,6 +351,8 @@ class CameraController(
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         )
+        // Freeze white balance so overnight lighting drifts do not retint the markers.
+        setOption.set(CaptureRequest.CONTROL_AWB_LOCK, true)
         if (hasManualExposure()) {
             setOption.set(CaptureRequest.CONTROL_AE_LOCK, false)
             setOption.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)

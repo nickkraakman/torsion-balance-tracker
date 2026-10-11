@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dev.qi.torsionbalance.CalibrationState
@@ -32,6 +33,10 @@ class CalibrationStore(private val context: Context) {
         val BLOB_AREA_MIN = doublePreferencesKey(CalibrationPreferences.Keys.BLOB_AREA_MIN)
         val BLOB_AREA_MAX = doublePreferencesKey(CalibrationPreferences.Keys.BLOB_AREA_MAX)
         val CAMERA_LOCKED = booleanPreferencesKey(CalibrationPreferences.Keys.CAMERA_LOCKED)
+        val EXPOSURE_TIME_NS = longPreferencesKey(CalibrationPreferences.Keys.EXPOSURE_TIME_NS)
+        val ISO_SENSITIVITY = intPreferencesKey(CalibrationPreferences.Keys.ISO_SENSITIVITY)
+        val FRAME_DURATION_NS = longPreferencesKey(CalibrationPreferences.Keys.FRAME_DURATION_NS)
+        val FOCUS_DISTANCE = floatPreferencesKey(CalibrationPreferences.Keys.FOCUS_DISTANCE)
         val CALIBRATION_COMPLETE = booleanPreferencesKey(CalibrationPreferences.Keys.CALIBRATION_COMPLETE)
         val SAMPLE_RATE = stringPreferencesKey(CalibrationPreferences.Keys.SAMPLE_RATE)
         val KALMAN_PROCESS_NOISE = doublePreferencesKey(CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE)
@@ -40,6 +45,9 @@ class CalibrationStore(private val context: Context) {
         val FLASH_ROI_X = intPreferencesKey(CalibrationPreferences.Keys.FLASH_ROI_X)
         val FLASH_ROI_Y = intPreferencesKey(CalibrationPreferences.Keys.FLASH_ROI_Y)
         val FLASH_THRESHOLD = intPreferencesKey(CalibrationPreferences.Keys.FLASH_THRESHOLD)
+        val LOST_FRAME_THRESHOLD = intPreferencesKey(CalibrationPreferences.Keys.LOST_FRAME_THRESHOLD)
+        val ARM_JUMP_MAX_PX = floatPreferencesKey(CalibrationPreferences.Keys.ARM_JUMP_MAX_PX)
+        val REF_JUMP_MAX_PX = floatPreferencesKey(CalibrationPreferences.Keys.REF_JUMP_MAX_PX)
     }
 
     val calibrationFlow: Flow<CalibrationState> = context.dataStore.data.map { prefs ->
@@ -72,6 +80,10 @@ class CalibrationStore(private val context: Context) {
                 CalibrationPreferences.Keys.BLOB_AREA_MIN to prefs[Keys.BLOB_AREA_MIN],
                 CalibrationPreferences.Keys.BLOB_AREA_MAX to prefs[Keys.BLOB_AREA_MAX],
                 CalibrationPreferences.Keys.CAMERA_LOCKED to prefs[Keys.CAMERA_LOCKED],
+                CalibrationPreferences.Keys.EXPOSURE_TIME_NS to prefs[Keys.EXPOSURE_TIME_NS],
+                CalibrationPreferences.Keys.ISO_SENSITIVITY to prefs[Keys.ISO_SENSITIVITY],
+                CalibrationPreferences.Keys.FRAME_DURATION_NS to prefs[Keys.FRAME_DURATION_NS],
+                CalibrationPreferences.Keys.FOCUS_DISTANCE to prefs[Keys.FOCUS_DISTANCE],
                 CalibrationPreferences.Keys.CALIBRATION_COMPLETE to prefs[Keys.CALIBRATION_COMPLETE],
                 CalibrationPreferences.Keys.SAMPLE_RATE to prefs[Keys.SAMPLE_RATE],
                 CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE to prefs[Keys.KALMAN_PROCESS_NOISE],
@@ -80,6 +92,9 @@ class CalibrationStore(private val context: Context) {
                 CalibrationPreferences.Keys.FLASH_ROI_X to prefs[Keys.FLASH_ROI_X],
                 CalibrationPreferences.Keys.FLASH_ROI_Y to prefs[Keys.FLASH_ROI_Y],
                 CalibrationPreferences.Keys.FLASH_THRESHOLD to prefs[Keys.FLASH_THRESHOLD],
+                CalibrationPreferences.Keys.LOST_FRAME_THRESHOLD to prefs[Keys.LOST_FRAME_THRESHOLD],
+                CalibrationPreferences.Keys.ARM_JUMP_MAX_PX to prefs[Keys.ARM_JUMP_MAX_PX],
+                CalibrationPreferences.Keys.REF_JUMP_MAX_PX to prefs[Keys.REF_JUMP_MAX_PX],
             ),
         )
     }
@@ -98,6 +113,10 @@ class CalibrationStore(private val context: Context) {
         prefs[Keys.BLOB_AREA_MIN] = encoded[CalibrationPreferences.Keys.BLOB_AREA_MIN] as Double
         prefs[Keys.BLOB_AREA_MAX] = encoded[CalibrationPreferences.Keys.BLOB_AREA_MAX] as Double
         prefs[Keys.CAMERA_LOCKED] = encoded[CalibrationPreferences.Keys.CAMERA_LOCKED] as Boolean
+        prefs[Keys.EXPOSURE_TIME_NS] = encoded[CalibrationPreferences.Keys.EXPOSURE_TIME_NS] as Long
+        prefs[Keys.ISO_SENSITIVITY] = encoded[CalibrationPreferences.Keys.ISO_SENSITIVITY] as Int
+        prefs[Keys.FRAME_DURATION_NS] = encoded[CalibrationPreferences.Keys.FRAME_DURATION_NS] as Long
+        prefs[Keys.FOCUS_DISTANCE] = encoded[CalibrationPreferences.Keys.FOCUS_DISTANCE] as Float
         prefs[Keys.CALIBRATION_COMPLETE] = encoded[CalibrationPreferences.Keys.CALIBRATION_COMPLETE] as Boolean
         prefs[Keys.SAMPLE_RATE] = encoded[CalibrationPreferences.Keys.SAMPLE_RATE] as String
         prefs[Keys.KALMAN_PROCESS_NOISE] = encoded[CalibrationPreferences.Keys.KALMAN_PROCESS_NOISE] as Double
@@ -107,5 +126,8 @@ class CalibrationStore(private val context: Context) {
         prefs[Keys.FLASH_ROI_X] = encoded[CalibrationPreferences.Keys.FLASH_ROI_X] as Int
         prefs[Keys.FLASH_ROI_Y] = encoded[CalibrationPreferences.Keys.FLASH_ROI_Y] as Int
         prefs[Keys.FLASH_THRESHOLD] = encoded[CalibrationPreferences.Keys.FLASH_THRESHOLD] as Int
+        prefs[Keys.LOST_FRAME_THRESHOLD] = encoded[CalibrationPreferences.Keys.LOST_FRAME_THRESHOLD] as Int
+        prefs[Keys.ARM_JUMP_MAX_PX] = encoded[CalibrationPreferences.Keys.ARM_JUMP_MAX_PX] as Float
+        prefs[Keys.REF_JUMP_MAX_PX] = encoded[CalibrationPreferences.Keys.REF_JUMP_MAX_PX] as Float
     }
 }

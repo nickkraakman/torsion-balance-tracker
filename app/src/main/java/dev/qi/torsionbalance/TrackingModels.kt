@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 
 enum class TrackingFlags {
     OK,
+    /** One or both markers missed this frame but still within the hysteresis window. */
+    HELD,
     ARM_LOST,
     REF_LOST,
     BOTH_LOST,
@@ -80,6 +82,24 @@ data class MarkerDetection(
     val found: Boolean,
     val x: Float,
     val y: Float,
+    /** True when reporting the last good position during a short miss (hysteresis). */
+    val held: Boolean = false,
+    val area: Double? = null,
+    val matchScore: Double? = null,
+)
+
+/** Per-frame detector diagnostics appended to CSV sample rows. */
+data class MarkerDiagnostics(
+    val armBlobArea: Double? = null,
+    val refBlobArea: Double? = null,
+    val armThreshold: Double? = null,
+    val refThreshold: Double? = null,
+    val armRoiMean: Double? = null,
+    val refRoiMean: Double? = null,
+    val armCandidateCount: Int = 0,
+    val refCandidateCount: Int = 0,
+    val armMatchScore: Double? = null,
+    val refMatchScore: Double? = null,
 )
 
 data class TrackingResult(
@@ -95,6 +115,7 @@ data class TrackingResult(
     val flags: TrackingFlags,
     val imageWidth: Int,
     val imageHeight: Int,
+    val diagnostics: MarkerDiagnostics = MarkerDiagnostics(),
 )
 
 data class CalibrationState(
@@ -111,6 +132,13 @@ data class CalibrationState(
     val blobAreaMin: Double = 20.0,
     val blobAreaMax: Double = 8000.0,
     val cameraLocked: Boolean = false,
+    /** Manual AE exposure time (ns) captured at Lock Camera; restored on restart. */
+    val exposureTimeNs: Long = 0L,
+    /** Manual AE ISO / sensor sensitivity captured at Lock Camera. */
+    val isoSensitivity: Int = 0,
+    val frameDurationNs: Long = 0L,
+    /** Fixed focus distance (diopters) captured at Lock Camera; 0 means unset. */
+    val focusDistance: Float = 0f,
     val calibrationComplete: Boolean = false,
     val sampleRate: SampleRate = SampleRate.EVERY_FRAME,
     val kalmanProcessNoise: Double = dev.qi.torsionbalance.vision.KalmanFilter1D.DEFAULT_PROCESS_NOISE,
@@ -119,6 +147,10 @@ data class CalibrationState(
     val flashRoiX: Int = -1,
     val flashRoiY: Int = -1,
     val flashThreshold: Int = 40,
+    /** Consecutive misses before ARM_LOST / REF_LOST (shorter gaps are HELD). */
+    val lostFrameThreshold: Int = dev.qi.torsionbalance.vision.MarkerTrackLogic.DEFAULT_LOST_FRAME_THRESHOLD,
+    val armJumpMaxPx: Float = dev.qi.torsionbalance.vision.MarkerTrackLogic.DEFAULT_ARM_JUMP_MAX_PX,
+    val refJumpMaxPx: Float = dev.qi.torsionbalance.vision.MarkerTrackLogic.DEFAULT_REF_JUMP_MAX_PX,
 )
 
 /** Live trigger-LED ROI readout for threshold tuning. */
