@@ -3,10 +3,12 @@ package dev.qi.torsionbalance.vision
 import dev.qi.torsionbalance.TrackingFlags
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Pure tracking helpers (no OpenCV) so hysteresis, gates, and scoring are unit-testable.
@@ -23,6 +25,14 @@ object MarkerTrackLogic {
     const val DEFAULT_ROI_WIDEN_PER_MISS = 20
     const val DEFAULT_MIN_CIRCULARITY = 0.35
     const val DEFAULT_MIN_CONTRAST = 12.0
+
+    /** Shared Settings / ViewModel clamp ranges. */
+    const val LOST_FRAME_MIN = 1
+    const val LOST_FRAME_MAX = 30
+    const val ARM_JUMP_MIN_PX = 1f
+    const val ARM_JUMP_MAX_PX = 80f
+    const val REF_JUMP_MIN_PX = 1f
+    const val REF_JUMP_MAX_PX = 20f
 
     data class Config(
         val lostFrameThreshold: Int = DEFAULT_LOST_FRAME_THRESHOLD,
@@ -46,7 +56,10 @@ object MarkerTrackLogic {
         val bboxTop: Int,
         val bboxRight: Int,
         val bboxBottom: Int,
-        val meanLuma: Double,
+        /** Mean luma inside the blob; NaN until computed for a shortlisted candidate. */
+        val meanLuma: Double = Double.NaN,
+        /** Mean luma of ROI background (excluding the blob); NaN until computed. */
+        val backgroundMean: Double = Double.NaN,
     )
 
     data class ScoredCandidate(
@@ -57,17 +70,40 @@ object MarkerTrackLogic {
         val jumpPx: Double,
     )
 
-    fun roiHalfWidth(missFrames: Int, config: Config = Config()): Int {
-        if (missFrames <= 0) return config.roiHalfInitial
-        val widened = config.roiHalfInitial + missFrames * config.roiWidenPerMiss
+    /**
+     * Minimum ROI half-extent so a circular blob of [expectedArea] plus the jump gate
+     * fits without touching the border: max(initial, 2·r + jumpGate).
+     */
+    fun minRoiHalfForBlob(
+        expectedArea: Double?,
+        jumpGatePx: Float,
+        config: Config = Config(),
+    ): Int {
+        if (expectedArea == null || expectedArea <= 0.0) return config.roiHalfInitial
+        val r = sqrt(expectedArea / PI)
+        val needed = ceil(2.0 * r + jumpGatePx.toDouble()).toInt()
+        return max(config.roiHalfInitial, needed)
+    }
+
+    fun roiHalfSize(
+        missFrames: Int,
+        expectedArea: Double?,
+        jumpGatePx: Float,
+        config: Config = Config(),
+    ): Int {
+        val minHalf = minRoiHalfForBlob(expectedArea, jumpGatePx, config)
+        if (missFrames <= 0) return min(config.roiHalfMax, minHalf)
+        val widened = minHalf + missFrames * config.roiWidenPerMiss
         return min(config.roiHalfMax, widened)
     }
 
-    fun roiHalfHeight(missFrames: Int, config: Config = Config()): Int {
-        // Keep vertical search tighter; widen slower than horizontal.
-        val half = roiHalfWidth(missFrames, config)
-        return max(config.roiHalfInitial / 2, half / 2)
-    }
+    /** @deprecated Use [roiHalfSize] (both axes use the same extent). */
+    fun roiHalfWidth(missFrames: Int, config: Config = Config()): Int =
+        roiHalfSize(missFrames, expectedArea = null, jumpGatePx = 0f, config = config)
+
+    /** @deprecated Use [roiHalfSize] (both axes use the same extent). */
+    fun roiHalfHeight(missFrames: Int, config: Config = Config()): Int =
+        roiHalfSize(missFrames, expectedArea = null, jumpGatePx = 0f, config = config)
 
     fun areaWithinTolerance(area: Double, expected: Double?, tolerance: Double = DEFAULT_AREA_TOLERANCE): Boolean {
         if (expected == null || expected <= 0.0) return true
@@ -89,7 +125,7 @@ object MarkerTrackLogic {
         return (4.0 * PI * area) / (perimeter * perimeter)
     }
 
-    fun contrastDarkOnLight(roiMean: Double, blobMean: Double): Double = roiMean - blobMean
+    fun contrastDarkOnLight(backgroundMean: Double, blobMean: Double): Double = backgroundMean - blobMean
 
     fun touchesRoiBorder(
         bboxLeft: Int,
@@ -106,9 +142,26 @@ object MarkerTrackLogic {
             bboxBottom >= roiHeight - 1
     }
 
-    fun jumpAccepted(jumpPx: Double, maxJumpPx: Float, reacquiring: Boolean): Boolean {
-        if (reacquiring) return true
-        return jumpPx <= maxJumpPx.toDouble()
+    /**
+     * Allowed jump grows with the miss streak during HELD:
+     * `baseMax + missFrames * roiWidenPerMiss`. The gate is dropped only once
+     * [missFrames] reaches [lostThreshold] (LOST).
+     */
+    fun allowedJumpPx(
+        baseMaxJumpPx: Float,
+        missFrames: Int,
+        lostThreshold: Int,
+        roiWidenPerMiss: Int = DEFAULT_ROI_WIDEN_PER_MISS,
+    ): Float {
+        if (missFrames <= 0) return baseMaxJumpPx
+        if (missFrames >= lostThreshold) return Float.MAX_VALUE
+        return baseMaxJumpPx + missFrames * roiWidenPerMiss
+    }
+
+    fun jumpAccepted(jumpPx: Double, allowedJumpPx: Float): Boolean {
+        // LOST path uses Float.MAX_VALUE as "gate open".
+        if (allowedJumpPx >= Float.MAX_VALUE / 2f) return true
+        return jumpPx <= allowedJumpPx.toDouble()
     }
 
     fun scoreCandidate(
@@ -116,22 +169,29 @@ object MarkerTrackLogic {
         preferX: Float,
         preferY: Float,
         expectedArea: Double?,
-        roiMean: Double,
-        maxJumpPx: Float,
-        reacquiring: Boolean,
+        allowedJumpPx: Float,
         config: Config = Config(),
+        requireContrast: Boolean = true,
     ): ScoredCandidate? {
         if (candidate.area <= 0.0) return null
         if (!areaWithinTolerance(candidate.area, expectedArea, config.areaTolerance)) return null
         val circ = circularity(candidate.area, candidate.perimeter)
         if (circ < config.minCircularity) return null
-        val contrast = contrastDarkOnLight(roiMean, candidate.meanLuma)
-        if (contrast < config.minContrast) return null
         val jump = hypot(
             (candidate.cx - preferX).toDouble(),
             (candidate.cy - preferY).toDouble(),
         )
-        if (!jumpAccepted(jump, maxJumpPx, reacquiring)) return null
+        if (!jumpAccepted(jump, allowedJumpPx)) return null
+
+        val hasMeans = candidate.meanLuma.isFinite() && candidate.backgroundMean.isFinite()
+        val contrast = if (hasMeans) {
+            contrastDarkOnLight(candidate.backgroundMean, candidate.meanLuma)
+        } else {
+            Double.NaN
+        }
+        if (requireContrast) {
+            if (!contrast.isFinite() || contrast < config.minContrast) return null
+        }
 
         val distScore = 1.0 / (1.0 + jump)
         val areaScore = if (expectedArea == null || expectedArea <= 0.0) {
@@ -141,24 +201,30 @@ object MarkerTrackLogic {
             (1.0 - min(1.0, abs(ln(ratio.coerceAtLeast(1e-6))))).coerceIn(0.0, 1.0)
         }
         val circScore = circ.coerceIn(0.0, 1.0)
-        val contrastScore = (contrast / 80.0).coerceIn(0.0, 1.0)
+        val contrastScore = if (contrast.isFinite()) {
+            (contrast / 80.0).coerceIn(0.0, 1.0)
+        } else {
+            0.5
+        }
         val score = 0.35 * distScore + 0.25 * areaScore + 0.25 * circScore + 0.15 * contrastScore
-        return ScoredCandidate(candidate, score, circ, contrast, jump)
+        return ScoredCandidate(candidate, score, circ, if (contrast.isFinite()) contrast else 0.0, jump)
     }
 
+    /**
+     * Rank candidates that pass geometry/jump gates (contrast optional), then prefer
+     * those that also pass contrast when means are available.
+     */
     fun pickBest(
         candidates: List<BlobCandidate>,
         preferX: Float,
         preferY: Float,
         expectedArea: Double?,
-        roiMean: Double,
         roiWidth: Int,
         roiHeight: Int,
-        maxJumpPx: Float,
-        reacquiring: Boolean,
+        allowedJumpPx: Float,
         config: Config = Config(),
     ): ScoredCandidate? {
-        var best: ScoredCandidate? = null
+        val geometric = ArrayList<ScoredCandidate>()
         for (c in candidates) {
             if (touchesRoiBorder(c.bboxLeft, c.bboxTop, c.bboxRight, c.bboxBottom, roiWidth, roiHeight)) {
                 continue
@@ -168,16 +234,19 @@ object MarkerTrackLogic {
                 preferX = preferX,
                 preferY = preferY,
                 expectedArea = expectedArea,
-                roiMean = roiMean,
-                maxJumpPx = maxJumpPx,
-                reacquiring = reacquiring,
+                allowedJumpPx = allowedJumpPx,
                 config = config,
+                requireContrast = c.meanLuma.isFinite() && c.backgroundMean.isFinite(),
             ) ?: continue
-            if (best == null || scored.score > best.score) {
-                best = scored
-            }
+            geometric.add(scored)
         }
-        return best
+        if (geometric.isEmpty()) return null
+        geometric.sortByDescending { it.score }
+        // Prefer a candidate that already has contrast; otherwise return the best geometric match
+        // (caller may fill means and re-check).
+        return geometric.firstOrNull {
+            it.candidate.meanLuma.isFinite() && it.candidate.backgroundMean.isFinite()
+        } ?: geometric.first()
     }
 
     /**

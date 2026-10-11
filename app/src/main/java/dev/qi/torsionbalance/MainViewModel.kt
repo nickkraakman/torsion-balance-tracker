@@ -759,9 +759,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             calibrationStore.update {
                 it.copy(
-                    lostFrameThreshold = lostFrameThreshold.coerceIn(1, 60),
-                    armJumpMaxPx = armJumpMaxPx.coerceIn(1f, 200f),
-                    refJumpMaxPx = refJumpMaxPx.coerceIn(1f, 50f),
+                    lostFrameThreshold = lostFrameThreshold.coerceIn(
+                        MarkerTrackLogic.LOST_FRAME_MIN,
+                        MarkerTrackLogic.LOST_FRAME_MAX,
+                    ),
+                    armJumpMaxPx = armJumpMaxPx.coerceIn(
+                        MarkerTrackLogic.ARM_JUMP_MIN_PX,
+                        MarkerTrackLogic.ARM_JUMP_MAX_PX,
+                    ),
+                    refJumpMaxPx = refJumpMaxPx.coerceIn(
+                        MarkerTrackLogic.REF_JUMP_MIN_PX,
+                        MarkerTrackLogic.REF_JUMP_MAX_PX,
+                    ),
                 )
             }
         }

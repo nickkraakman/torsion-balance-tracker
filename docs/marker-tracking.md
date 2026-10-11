@@ -9,19 +9,23 @@ image `x` positions (converted with mm/px and the arm-direction sign).
 Each seeded marker is searched in a grayscale ROI centred on its **last known**
 position (not the calibration tap seed after the first lock):
 
-1. Gaussian blur (3×3) → Otsu threshold (`THRESH_BINARY_INV`) on a **small** ROI
-   (~±60 px). On consecutive misses the ROI widens progressively (up to ±200 px)
-   while still centred on the last good position.
+1. Gaussian blur (3×3) → Otsu threshold (`THRESH_BINARY_INV`) on an ROI centred on
+   the last known position. Half-extent is at least
+   `max(60, 2·√(expectedArea/π) + jumpGate)` on **both** axes so large markers are
+   not border-clipped at `missFrames=0`. On consecutive misses the ROI widens by
+   20 px/miss (up to ±200 px).
 2. External contours → candidates filtered by blob area min/max, **adaptive expected
    area** (±60% of a slow EMA updated only on accepted hits), circularity, and
-   dark-on-light contrast.
+   dark-on-light contrast (background = ROI mean **excluding** the blob).
 3. Contours whose bounding box **touches the ROI border** are rejected (stops
    false locks on edge-clipped shadows ~200 px away).
-4. Per-frame **jump gate**: reject a hit that jumps more than a configurable distance
-   from the last good centre (defaults: **20 px** arm, **3 px** reference). The gate
-   is relaxed while re-acquiring after a miss.
+4. Per-frame **jump gate**: reject a hit farther than
+   `baseMax + missFrames × 20` from the last good centre (defaults: **20 px** arm,
+   **3 px** reference). The gate is **dropped only after LOST** (miss streak ≥ N);
+   a single miss does not open the full ROI.
 5. Remaining candidates are scored (distance, area match, circularity, contrast);
-   the best score wins.
+   the best score wins. Blob/background means are computed only for shortlisted
+   candidates.
 6. All OpenCV contours / temporary mats are released every frame.
 
 ## Hysteresis and flags
@@ -40,8 +44,10 @@ calibration seed after five misses. That behaviour is gone.
 
 **Lock Camera** meters AE/AF on the **arm marker** region (not frame centre), then
 stores manual exposure time, ISO, frame duration, and focus distance in DataStore
-with the rest of the calibration. AWB is locked. On app restart those values are
-**restored** — the session does not re-sample AE at frame centre.
+with the rest of the calibration. AWB is locked only after that session has metered
+(or after a short warmup on restore) so boot white-balance gains are not frozen.
+On app restart AE/ISO/focus are **restored** — the session does not re-sample AE
+at frame centre.
 
 ## CSV diagnostics
 

@@ -67,6 +67,8 @@ class CameraController(
     private var lockedExposureTimeNs: Long = 0L
     private var lockedSensitivity: Int = 0
     private var lockedFrameDurationNs: Long = 0L
+    /** True only after a session has had time to converge AWB (or after sampleAndLock). */
+    private var awbLockAllowed: Boolean = false
 
     @Volatile
     private var latestExposureTimeNs: Long = 0L
@@ -135,6 +137,8 @@ class CameraController(
             frameCallback = onFrame
             val provider = obtainProvider()
             cameraProvider = provider
+            // Fresh session: apply AE/AF without AWB lock so boot gains can converge.
+            awbLockAllowed = false
             bindUseCases(provider, lifecycleOwner, previewView, onFrame)
             if (!isLocked) return@withLock
             // AE lock in the first request of a new session freezes the sensor's
@@ -146,7 +150,11 @@ class CameraController(
                 if (hasManualExposure()) {
                     bindUseCases(provider, lifecycleOwner, previewView, onFrame)
                 }
+            } else {
+                // Manual AE restored; let AWB settle before freezing it.
+                delay(AE_WARMUP_MS)
             }
+            awbLockAllowed = true
             camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
         }
     }
@@ -188,6 +196,8 @@ class CameraController(
 
             rememberConvergedExposure(cam)
             isLocked = true
+            // Metering warmup already ran — safe to freeze AWB on this session.
+            awbLockAllowed = true
             applyLock(camera2Control)
             return sampled
         }
@@ -196,6 +206,7 @@ class CameraController(
     /**
      * Restore a previously persisted manual AE + focus lock without re-metering.
      * Avoids the restart path that used to resample AE at frame centre.
+     * AWB is locked only after a short warmup so boot white-balance can converge.
      */
     suspend fun restorePersistedLock(settings: LockedCameraSettings): Boolean {
         sessionMutex.withLock {
@@ -211,6 +222,7 @@ class CameraController(
                 lockedFocusDistance = 0f
             }
             isLocked = true
+            awbLockAllowed = false
             val owner = boundLifecycleOwner
             val view = boundPreviewView
             val cb = frameCallback
@@ -218,6 +230,9 @@ class CameraController(
             if (owner != null && view != null && cb != null && provider != null) {
                 bindUseCases(provider, owner, view, cb)
             }
+            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
+            delay(AE_WARMUP_MS)
+            awbLockAllowed = true
             camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
             return true
         }
@@ -227,6 +242,7 @@ class CameraController(
         sessionMutex.withLock {
             isLocked = false
             focusSampled = false
+            awbLockAllowed = false
             lockedFocusDistance = 0f
             lockedExposureTimeNs = 0L
             lockedSensitivity = 0
@@ -264,6 +280,7 @@ class CameraController(
                 }
             },
             includeAeLockFallback = true,
+            includeAwbLock = awbLockAllowed,
         )
         camera2Control.captureRequestOptions = builder.build()
     }
@@ -316,6 +333,7 @@ class CameraController(
                 }
             },
             includeAeLockFallback = false,
+            includeAwbLock = awbLockAllowed,
         )
     }
 
@@ -329,6 +347,7 @@ class CameraController(
                 }
             },
             includeAeLockFallback = false,
+            includeAwbLock = awbLockAllowed,
         )
     }
 
@@ -338,10 +357,14 @@ class CameraController(
      * [includeAeLockFallback] is only safe on a session that has already metered.
      * A new session must not set [CaptureRequest.CONTROL_AE_LOCK] until then: the
      * lock freezes the sensor's unset exposure, which is nearly black.
+     *
+     * [includeAwbLock] must also wait for a metered/warmed session — locking AWB on
+     * the first request of a fresh session freezes boot white-balance gains.
      */
     private fun writeLockOptions(
         setOption: RequestOptionSetter,
         includeAeLockFallback: Boolean,
+        includeAwbLock: Boolean,
     ) {
         setOption.set(
             CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
@@ -351,8 +374,9 @@ class CameraController(
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         )
-        // Freeze white balance so overnight lighting drifts do not retint the markers.
-        setOption.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+        if (includeAwbLock) {
+            setOption.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+        }
         if (hasManualExposure()) {
             setOption.set(CaptureRequest.CONTROL_AE_LOCK, false)
             setOption.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)

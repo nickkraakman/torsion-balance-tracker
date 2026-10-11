@@ -9,6 +9,7 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
+import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.imgproc.Imgproc
 import kotlin.math.atan2
@@ -45,6 +46,7 @@ class MarkerTracker(
     private val blurred = Mat()
     private val hierarchy = Mat()
     private val mask = Mat()
+    private val invMask = Mat()
 
     fun updateConfig(config: MarkerTrackLogic.Config) {
         this.config = config
@@ -97,7 +99,6 @@ class MarkerTracker(
         blobAreaMax: Double,
         timestampMs: Long,
     ): TrackingResult {
-        // Search around last known position (never snap back to calibration seed).
         val armDet = if (armSeeded) {
             detectInRoi(
                 gray = gray,
@@ -107,7 +108,7 @@ class MarkerTracker(
                 blobAreaMax = blobAreaMax,
                 expectedArea = expectedArmArea,
                 missFrames = armLostFrames,
-                maxJumpPx = config.armJumpMaxPx,
+                baseMaxJumpPx = config.armJumpMaxPx,
             )
         } else {
             RoiDetectResult.idle()
@@ -122,7 +123,7 @@ class MarkerTracker(
                 blobAreaMax = blobAreaMax,
                 expectedArea = expectedRefArea,
                 missFrames = refLostFrames,
-                maxJumpPx = config.refJumpMaxPx,
+                baseMaxJumpPx = config.refJumpMaxPx,
             )
         } else {
             RoiDetectResult.idle()
@@ -190,7 +191,6 @@ class MarkerTracker(
         var dispFilt: Double? = null
         var angle: Double? = null
 
-        // Fresh detections only — HELD/LOST rows leave displacement null so analysis can mask.
         if (armDet.found && refDet.found && flags == TrackingFlags.OK) {
             xRel = (arm.x - reference.x).toDouble()
             yRel = (arm.y - reference.y).toDouble()
@@ -239,7 +239,12 @@ class MarkerTracker(
         blobAreaMin: Double = 10.0,
         blobAreaMax: Double = 50_000.0,
     ): MarkerDetection? {
-        val half = config.roiHalfInitial
+        val half = MarkerTrackLogic.roiHalfSize(
+            missFrames = 0,
+            expectedArea = null,
+            jumpGatePx = config.armJumpMaxPx,
+            config = config,
+        )
         val roi = RoiMath.clampRoi(gray, tapX, tapY, half, half)
         if (roi.width <= 0 || roi.height <= 0) return null
         val sub = Mat(gray, roi)
@@ -250,8 +255,7 @@ class MarkerTracker(
             preferX = tapX - roi.x,
             preferY = tapY - roi.y,
             expectedArea = null,
-            maxJumpPx = Float.MAX_VALUE,
-            reacquiring = true,
+            allowedJumpPx = Float.MAX_VALUE,
         )
         sub.release()
         return if (det.found) {
@@ -274,7 +278,12 @@ class MarkerTracker(
     }
 
     fun measureAreaAt(gray: Mat, x: Float, y: Float): Double? {
-        val half = config.roiHalfInitial
+        val half = MarkerTrackLogic.roiHalfSize(
+            missFrames = 0,
+            expectedArea = null,
+            jumpGatePx = config.armJumpMaxPx,
+            config = config,
+        )
         val roi = RoiMath.clampRoi(gray, x, y, half, half)
         if (roi.width <= 0 || roi.height <= 0) return null
         val sub = Mat(gray, roi)
@@ -285,8 +294,7 @@ class MarkerTracker(
             preferX = x - roi.x,
             preferY = y - roi.y,
             expectedArea = null,
-            maxJumpPx = Float.MAX_VALUE,
-            reacquiring = true,
+            allowedJumpPx = Float.MAX_VALUE,
         )
         sub.release()
         return if (det.found) det.area else null
@@ -300,11 +308,21 @@ class MarkerTracker(
         blobAreaMax: Double,
         expectedArea: Double?,
         missFrames: Int,
-        maxJumpPx: Float,
+        baseMaxJumpPx: Float,
     ): RoiDetectResult {
-        val halfW = MarkerTrackLogic.roiHalfWidth(missFrames, config)
-        val halfH = MarkerTrackLogic.roiHalfHeight(missFrames, config)
-        val roi = RoiMath.clampRoi(gray, centerX, centerY, halfW, halfH)
+        val allowedJump = MarkerTrackLogic.allowedJumpPx(
+            baseMaxJumpPx = baseMaxJumpPx,
+            missFrames = missFrames,
+            lostThreshold = config.lostFrameThreshold,
+            roiWidenPerMiss = config.roiWidenPerMiss,
+        )
+        val half = MarkerTrackLogic.roiHalfSize(
+            missFrames = missFrames,
+            expectedArea = expectedArea,
+            jumpGatePx = baseMaxJumpPx,
+            config = config,
+        )
+        val roi = RoiMath.clampRoi(gray, centerX, centerY, half, half)
         if (roi.width <= 4 || roi.height <= 4) {
             return RoiDetectResult.idle()
         }
@@ -316,8 +334,7 @@ class MarkerTracker(
             preferX = centerX - roi.x,
             preferY = centerY - roi.y,
             expectedArea = expectedArea,
-            maxJumpPx = maxJumpPx,
-            reacquiring = missFrames > 0,
+            allowedJumpPx = allowedJump,
         )
         sub.release()
         return if (local.found) {
@@ -327,7 +344,7 @@ class MarkerTracker(
         }
     }
 
-    private data class RoiDetectResult(
+    internal data class RoiDetectResult(
         val found: Boolean,
         val x: Float,
         val y: Float,
@@ -351,15 +368,15 @@ class MarkerTracker(
         }
     }
 
-    private fun runBlobSearch(
+    /** Visible for JVM unit tests (synthetic images). */
+    internal fun runBlobSearch(
         roiGray: Mat,
         blobAreaMin: Double,
         blobAreaMax: Double,
         preferX: Float,
         preferY: Float,
         expectedArea: Double?,
-        maxJumpPx: Float,
-        reacquiring: Boolean,
+        allowedJumpPx: Float,
     ): RoiDetectResult {
         Imgproc.GaussianBlur(
             roiGray,
@@ -379,85 +396,161 @@ class MarkerTracker(
         val contours = ArrayList<MatOfPoint>()
         Imgproc.findContours(binary, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
-        val candidates = ArrayList<MarkerTrackLogic.BlobCandidate>(contours.size)
-        for (contour in contours) {
-            try {
-                val area = Imgproc.contourArea(contour)
-                if (area < blobAreaMin || area > blobAreaMax) continue
-                val rect = Imgproc.boundingRect(contour)
-                val m = Imgproc.moments(contour)
-                if (m.m00 <= 1e-6) continue
-                val cx = (m.m10 / m.m00).toFloat()
-                val cy = (m.m01 / m.m00).toFloat()
-                val approx = MatOfPoint2f(*contour.toArray())
-                val peri = try {
-                    Imgproc.arcLength(approx, true)
-                } finally {
-                    approx.release()
-                }
-                val meanLuma = meanInsideContour(roiGray, contour)
-                candidates.add(
-                    MarkerTrackLogic.BlobCandidate(
-                        cx = cx,
-                        cy = cy,
-                        area = area,
-                        perimeter = peri,
-                        bboxLeft = rect.x,
-                        bboxTop = rect.y,
-                        bboxRight = rect.x + rect.width,
-                        bboxBottom = rect.y + rect.height,
-                        meanLuma = meanLuma,
-                    ),
-                )
-            } finally {
-                contour.release()
-            }
-        }
-        contours.clear()
-
-        val best = MarkerTrackLogic.pickBest(
-            candidates = candidates,
-            preferX = preferX,
-            preferY = preferY,
-            expectedArea = expectedArea,
-            roiMean = roiMean,
-            roiWidth = roiGray.cols(),
-            roiHeight = roiGray.rows(),
-            maxJumpPx = maxJumpPx,
-            reacquiring = reacquiring,
-            config = config,
+        data class ContourCandidate(
+            val geometry: MarkerTrackLogic.BlobCandidate,
+            val contour: MatOfPoint,
         )
 
-        return if (best != null) {
-            RoiDetectResult(
-                found = true,
-                x = best.candidate.cx,
-                y = best.candidate.cy,
-                area = best.candidate.area,
-                matchScore = best.score,
-                threshold = otsu,
-                roiMean = roiMean,
-                candidateCount = candidates.size,
-            )
-        } else {
-            RoiDetectResult(
-                found = false,
-                x = preferX,
-                y = preferY,
-                area = 0.0,
-                matchScore = null,
-                threshold = otsu,
-                roiMean = roiMean,
-                candidateCount = candidates.size,
-            )
+        val pending = ArrayList<ContourCandidate>(contours.size)
+        try {
+            for (contour in contours) {
+                val area = Imgproc.contourArea(contour)
+                if (area < blobAreaMin || area > blobAreaMax) {
+                    contour.release()
+                    continue
+                }
+                val rect = Imgproc.boundingRect(contour)
+                val m = Imgproc.moments(contour)
+                if (m.m00 <= 1e-6) {
+                    contour.release()
+                    continue
+                }
+                val cx = (m.m10 / m.m00).toFloat()
+                val cy = (m.m01 / m.m00).toFloat()
+                val contour2f = MatOfPoint2f()
+                val peri = try {
+                    contour.convertTo(contour2f, CvType.CV_32F)
+                    Imgproc.arcLength(contour2f, true)
+                } finally {
+                    contour2f.release()
+                }
+                pending.add(
+                    ContourCandidate(
+                        geometry = MarkerTrackLogic.BlobCandidate(
+                            cx = cx,
+                            cy = cy,
+                            area = area,
+                            perimeter = peri,
+                            bboxLeft = rect.x,
+                            bboxTop = rect.y,
+                            bboxRight = rect.x + rect.width,
+                            bboxBottom = rect.y + rect.height,
+                        ),
+                        contour = contour,
+                    ),
+                )
+            }
+
+            // Rank by geometry/jump (no contrast yet).
+            val ranked = pending.mapNotNull { item ->
+                if (MarkerTrackLogic.touchesRoiBorder(
+                        item.geometry.bboxLeft,
+                        item.geometry.bboxTop,
+                        item.geometry.bboxRight,
+                        item.geometry.bboxBottom,
+                        roiGray.cols(),
+                        roiGray.rows(),
+                    )
+                ) {
+                    return@mapNotNull null
+                }
+                MarkerTrackLogic.scoreCandidate(
+                    candidate = item.geometry,
+                    preferX = preferX,
+                    preferY = preferY,
+                    expectedArea = expectedArea,
+                    allowedJumpPx = allowedJumpPx,
+                    config = config,
+                    requireContrast = false,
+                )?.let { scored -> item to scored }
+            }.sortedByDescending { it.second.score }
+
+            var best: MarkerTrackLogic.ScoredCandidate? = null
+            for ((item, _) in ranked) {
+                val (blobMean, backgroundMean) = meansForContour(roiGray, item.contour, item.geometry)
+                val enriched = item.geometry.copy(meanLuma = blobMean, backgroundMean = backgroundMean)
+                val scored = MarkerTrackLogic.scoreCandidate(
+                    candidate = enriched,
+                    preferX = preferX,
+                    preferY = preferY,
+                    expectedArea = expectedArea,
+                    allowedJumpPx = allowedJumpPx,
+                    config = config,
+                    requireContrast = true,
+                ) ?: continue
+                best = scored
+                break
+            }
+
+            return if (best != null) {
+                RoiDetectResult(
+                    found = true,
+                    x = best.candidate.cx,
+                    y = best.candidate.cy,
+                    area = best.candidate.area,
+                    matchScore = best.score,
+                    threshold = otsu,
+                    roiMean = best.candidate.backgroundMean.takeIf { it.isFinite() } ?: roiMean,
+                    candidateCount = pending.size,
+                )
+            } else {
+                RoiDetectResult(
+                    found = false,
+                    x = preferX,
+                    y = preferY,
+                    area = 0.0,
+                    matchScore = null,
+                    threshold = otsu,
+                    roiMean = roiMean,
+                    candidateCount = pending.size,
+                )
+            }
+        } finally {
+            for (item in pending) {
+                item.contour.release()
+            }
+            // Contours that were released early are already gone; any leftover in the list
+            // that was not moved to pending was released in the loop.
+            contours.clear()
         }
     }
 
-    private fun meanInsideContour(roiGray: Mat, contour: MatOfPoint): Double {
+    /**
+     * Blob mean over the filled contour; background mean over the ROI excluding the contour
+     * (falls back to a bbox-exterior estimate if the exterior is empty).
+     */
+    private fun meansForContour(
+        roiGray: Mat,
+        contour: MatOfPoint,
+        geometry: MarkerTrackLogic.BlobCandidate,
+    ): Pair<Double, Double> {
         mask.create(roiGray.rows(), roiGray.cols(), CvType.CV_8UC1)
         mask.setTo(Scalar(0.0))
         Imgproc.drawContours(mask, listOf(contour), 0, Scalar(255.0), Imgproc.FILLED)
-        return Core.mean(roiGray, mask).`val`[0]
+        val blobMean = Core.mean(roiGray, mask).`val`[0]
+
+        Core.bitwise_not(mask, invMask)
+        val bg = Core.mean(roiGray, invMask)
+        val bgCount = Core.countNonZero(invMask)
+        val backgroundMean = if (bgCount > 0) {
+            bg.`val`[0]
+        } else {
+            // Degenerate: blob fills ROI — sample just outside the bbox if possible.
+            val pad = 2
+            val x0 = (geometry.bboxLeft - pad).coerceAtLeast(0)
+            val y0 = (geometry.bboxTop - pad).coerceAtLeast(0)
+            val x1 = (geometry.bboxRight + pad).coerceAtMost(roiGray.cols())
+            val y1 = (geometry.bboxBottom + pad).coerceAtMost(roiGray.rows())
+            if (x1 > x0 && y1 > y0) {
+                val ring = Mat(roiGray, Rect(x0, y0, x1 - x0, y1 - y0))
+                val ringMean = Core.mean(ring).`val`[0]
+                // ring is a view; do not release the parent
+                ringMean
+            } else {
+                Core.mean(roiGray).`val`[0]
+            }
+        }
+        return blobMean to backgroundMean
     }
 
     fun release() {
@@ -465,5 +558,6 @@ class MarkerTracker(
         blurred.release()
         hierarchy.release()
         mask.release()
+        invMask.release()
     }
 }

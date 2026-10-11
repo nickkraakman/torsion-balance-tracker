@@ -223,11 +223,24 @@ fun SettingsScreen(
                     "(default ${MarkerTrackLogic.DEFAULT_LOST_FRAME_THRESHOLD}).",
                 modifier = Modifier.padding(bottom = 4.dp),
             )
-            Slider(value = lostFrames, onValueChange = { lostFrames = it }, valueRange = 1f..30f)
+            Slider(
+                value = lostFrames,
+                onValueChange = { lostFrames = it },
+                valueRange = MarkerTrackLogic.LOST_FRAME_MIN.toFloat()..
+                    MarkerTrackLogic.LOST_FRAME_MAX.toFloat(),
+            )
             Text("Arm jump gate (px): ${armJump.toInt()}")
-            Slider(value = armJump, onValueChange = { armJump = it }, valueRange = 1f..80f)
+            Slider(
+                value = armJump,
+                onValueChange = { armJump = it },
+                valueRange = MarkerTrackLogic.ARM_JUMP_MIN_PX..MarkerTrackLogic.ARM_JUMP_MAX_PX,
+            )
             Text("Reference jump gate (px): ${"%.1f".format(refJump)}")
-            Slider(value = refJump, onValueChange = { refJump = it }, valueRange = 1f..20f)
+            Slider(
+                value = refJump,
+                onValueChange = { refJump = it },
+                valueRange = MarkerTrackLogic.REF_JUMP_MIN_PX..MarkerTrackLogic.REF_JUMP_MAX_PX,
+            )
             Button(
                 onClick = {
                     viewModel.updateTrackingRobustness(
