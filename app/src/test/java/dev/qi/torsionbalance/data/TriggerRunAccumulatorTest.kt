@@ -173,14 +173,48 @@ class TriggerSummaryFormatTest {
     }
 
     @Test
-    fun jsonIncludesSuspiciousAndFallbackCounts() {
+    fun edgeNotesCarrySuspiciousLongHoldWithoutCommas() {
+        assertEquals("", TriggerSummaryFormat.edgeNote(false))
+        assertEquals("suspicious_long_hold=true", TriggerSummaryFormat.edgeNote(true))
+        assertEquals(
+            "record_stop suspicious_long_hold=true",
+            TriggerSummaryFormat.edgeNote(true, "record_stop"),
+        )
+        assertFalse(TriggerSummaryFormat.edgeNote(true, "record_stop").contains(","))
+    }
+
+    @Test
+    fun annotateEdgeNotesStampsOnAndOffAfterLongHold() {
         val acc = TriggerRunAccumulator(suspiciousHoldMs = 100)
         acc.onFrame(0, 0, 1, true, true, LedEdge.ON, usedCaptureFallback = true)
         acc.onFrame(500, 10, 2, true, false, LedEdge.OFF)
-        val json = TriggerSummaryFormat.json(acc.finish())
-        assertTrue(json.contains("\"suspicious_long_holds\": 1"))
-        assertTrue(json.contains("\"capture_timestamp_fallbacks\": 1"))
-        assertTrue(json.contains("\"suspicious_long_hold\":true"))
+        val summary = acc.finish()
+        assertEquals(1, summary.suspiciousLongHolds)
+        assertEquals(1, summary.captureTimestampFallbacks)
+
+        val lines = listOf(
+            ExperimentCsvFormat.HEADER,
+            ExperimentCsvFormat.eventRow(0, "LED_ON", "", 0, true),
+            ExperimentCsvFormat.eventRow(500, "LED_OFF", "", 10, false),
+        )
+        val annotated = TriggerSummaryFormat.annotateEdgeNotes(lines, summary.edges)
+        assertTrue(annotated[1].contains("suspicious_long_hold=true"))
+        assertTrue(annotated[2].contains("suspicious_long_hold=true"))
+        annotated.drop(1).forEach { row ->
+            val cols = row.split(",")
+            assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
+            assertFalse(cols[10].contains(","))
+        }
+    }
+
+    @Test
+    fun summaryRowsIncludeSuspiciousAndFallbackCounts() {
+        val acc = TriggerRunAccumulator(suspiciousHoldMs = 100)
+        acc.onFrame(0, 0, 1, true, true, LedEdge.ON, usedCaptureFallback = true)
+        acc.onFrame(500, 10, 2, true, false, LedEdge.OFF)
+        val rows = TriggerSummaryFormat.summaryEventRows(acc.finish(), 500, 10)
+        assertTrue(rows.any { it.contains("suspicious_long_holds=1") })
+        assertTrue(rows.any { it.contains("capture_timestamp_fallbacks=1") })
     }
 }
 

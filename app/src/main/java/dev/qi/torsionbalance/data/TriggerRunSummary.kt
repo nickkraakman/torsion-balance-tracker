@@ -92,6 +92,22 @@ class TriggerRunAccumulator(
     /** Last processed frame index (0-based), or 0 if none. */
     fun lastProcessedFrameIndex(): Long = lastFrameIndex
 
+    /** Whether the open hold at [atTimestampMs] would be flagged suspicious. */
+    fun isOpenHoldSuspicious(atTimestampMs: Long): Boolean {
+        val start = openOnStartMs ?: return false
+        return (atTimestampMs - start).coerceAtLeast(0L) >= suspiciousHoldMs
+    }
+
+    /**
+     * True when the edge recorded for [frameIndex] / [on] is marked suspicious.
+     * For OFF, this is set when the hold closes; for ON, when that hold later proves long.
+     */
+    fun isEdgeSuspicious(frameIndex: Long, on: Boolean): Boolean {
+        return edges.any {
+            it.frameIndex == frameIndex && it.on == on && it.suspiciousLongHold
+        }
+    }
+
     fun finish(
         stopTimestampMs: Long = lastTsMs,
         stopFrameIndex: Long = lastFrameIndex,
@@ -113,7 +129,7 @@ class TriggerRunAccumulator(
                     suspiciousLongHold = suspicious,
                 ),
             )
-            // Mark the matching ON edge as suspicious for the sidecar.
+            // Mark the matching ON edge so CSV notes can carry the flag too.
             if (suspicious) {
                 val onIdx = closedEdges.indexOfLast { it.on && !it.suspiciousLongHold }
                 if (onIdx >= 0) {
@@ -205,23 +221,39 @@ object TriggerSummaryFormat {
         }
     }
 
-    fun json(summary: TriggerRunSummary): String {
-        val edgesJson = summary.edges.joinToString(",") { e ->
-            """{"t_ms":${e.timestampMs},"frame":${e.frameIndex},"state":"${e.state}","suspicious_long_hold":${e.suspiciousLongHold}}"""
-        }
-        return buildString {
-            appendLine("{")
-            appendLine("  \"processed_frames\": ${summary.processedFrames},")
-            appendLine("  \"duration_ms\": ${summary.durationMs},")
-            appendLine("  \"measured_fps\": ${fmt(summary.measuredFps)},")
-            appendLine("  \"led_logging\": ${summary.ledLogging},")
-            appendLine("  \"press_count\": ${summary.pressCount},")
-            appendLine("  \"total_led_on_ms\": ${summary.totalLedOnMs},")
-            appendLine("  \"suspicious_long_holds\": ${summary.suspiciousLongHolds},")
-            appendLine("  \"capture_timestamp_fallbacks\": ${summary.captureTimestampFallbacks},")
-            appendLine("  \"sparks_est_note\": \"sparks ≈ firing_rate_hz * total_led_on_ms / 1000\",")
-            appendLine("  \"edges\": [$edgesJson]")
-            appendLine("}")
+    /**
+     * Comma-free event note. [existing] may already hold tokens like `record_stop`.
+     */
+    fun edgeNote(suspiciousLongHold: Boolean, existing: String = ""): String {
+        val base = existing.trim()
+        if (!suspiciousLongHold) return base
+        if (base.contains("suspicious_long_hold=true")) return base
+        return if (base.isEmpty()) "suspicious_long_hold=true" else "$base suspicious_long_hold=true"
+    }
+
+    /**
+     * Ensures LED_ON / LED_OFF rows carry `suspicious_long_hold=true` when [edges] say so.
+     * ON edges are often written before hold duration is known; call this after [TriggerRunAccumulator.finish].
+     */
+    fun annotateEdgeNotes(lines: List<String>, edges: List<LedEdgeRecord>): List<String> {
+        if (edges.none { it.suspiciousLongHold }) return lines
+        val suspicious = edges.filter { it.suspiciousLongHold }
+            .associateBy { Triple(it.timestampMs, it.frameIndex, it.on) }
+        return lines.map { line ->
+            if (line.startsWith("#")) return@map line
+            val cols = line.split(",").toMutableList()
+            if (cols.size < ExperimentCsvFormat.COLUMN_COUNT) return@map line
+            if (cols[1] != "event") return@map line
+            val on = when (cols[9]) {
+                "LED_ON" -> true
+                "LED_OFF" -> false
+                else -> return@map line
+            }
+            val ts = cols[0].toLongOrNull() ?: return@map line
+            val frame = cols[11].toLongOrNull() ?: return@map line
+            if (suspicious[Triple(ts, frame, on)] == null) return@map line
+            cols[10] = edgeNote(true, cols[10])
+            cols.joinToString(",")
         }
     }
 

@@ -86,10 +86,12 @@ class ExperimentRecorder(private val context: Context) {
     }
 
     /**
-     * Closes the recording. Summary/sidecar failures must not leave [writer] open
+     * Closes the recording. Summary failures must not leave [writer] open
      * or [isRecording] stuck true.
      */
     private fun stopInternal(writeSummary: Boolean) {
+        var summaryForNotes: TriggerRunSummary? = null
+        var csvForNotes: File? = null
         runRecordingTeardown(
             block = {
                 if (writeSummary && writer != null) {
@@ -99,11 +101,17 @@ class ExperimentRecorder(private val context: Context) {
                         0L
                     }
                     if (triggerAccumulator.hasOpenHold()) {
+                        val note = TriggerSummaryFormat.edgeNote(
+                            suspiciousLongHold = triggerAccumulator.isOpenHoldSuspicious(
+                                lastCaptureTimestampMs,
+                            ),
+                            existing = "record_stop",
+                        )
                         writer?.write(
                             ExperimentCsvFormat.eventRow(
                                 lastCaptureTimestampMs,
                                 "LED_OFF",
-                                "record_stop",
+                                note,
                                 stopFrameIndex,
                                 false,
                             ),
@@ -122,10 +130,8 @@ class ExperimentRecorder(private val context: Context) {
                         writer?.write(row)
                         writer?.newLine()
                     }
-                    currentFile?.let { csv ->
-                        File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json")
-                            .writeText(TriggerSummaryFormat.json(summary))
-                    }
+                    summaryForNotes = summary
+                    csvForNotes = currentFile
                 }
             },
             teardown = {
@@ -144,6 +150,18 @@ class ExperimentRecorder(private val context: Context) {
                 lastGoodCaptureNs = 0L
             },
         )
+        // ON edges are written before hold duration is known; stamp notes from the final summary.
+        val summary = summaryForNotes
+        val csv = csvForNotes
+        if (summary != null && csv != null && summary.edges.any { it.suspiciousLongHold }) {
+            try {
+                val lines = csv.readLines()
+                val annotated = TriggerSummaryFormat.annotateEdgeNotes(lines, summary.edges)
+                csv.writeText(annotated.joinToString("\n") + "\n")
+            } catch (_: Exception) {
+                // Annotation is best-effort; summary rows already record suspicious_long_holds.
+            }
+        }
     }
 
     /**
@@ -233,12 +251,18 @@ class ExperimentRecorder(private val context: Context) {
             val w = writer ?: return
             val emitOn = edge == LedEdge.ON || (isFirstRecordedFrame && ledOn)
             if (emitOn) {
-                w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_ON", "", frameIndex, true))
+                val note = TriggerSummaryFormat.edgeNote(
+                    triggerAccumulator.isEdgeSuspicious(frameIndex, on = true),
+                )
+                w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_ON", note, frameIndex, true))
                 w.newLine()
             }
             // Skip unmatched OFF (e.g. OFF transition on frame 0 with no open hold).
             if (edge == LedEdge.OFF && hadOpenHoldBeforeFrame) {
-                w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_OFF", "", frameIndex, false))
+                val note = TriggerSummaryFormat.edgeNote(
+                    triggerAccumulator.isEdgeSuspicious(frameIndex, on = false),
+                )
+                w.write(ExperimentCsvFormat.eventRow(timestampMs, "LED_OFF", note, frameIndex, false))
                 w.newLine()
             }
             // Buffered only — forced flush is reserved for Stop / MARK so the
@@ -270,11 +294,6 @@ class ExperimentRecorder(private val context: Context) {
             ?: emptyList()
     }
 
-    fun sidecarFor(csvAbsolutePath: String): File {
-        val csv = File(csvAbsolutePath)
-        return File(csv.parentFile, csv.nameWithoutExtension + ".trigger.json")
-    }
-
     private fun summarizeCsv(file: File): ExperimentFileInfo {
         var samples = 0
         var lastTs = 0L
@@ -301,7 +320,7 @@ class ExperimentRecorder(private val context: Context) {
         val zipFile = File(experimentsDir(), "torsion_balance_export_${System.currentTimeMillis()}.zip")
         ZipOutputStream(zipFile.outputStream()).use { zos ->
             experimentsDir().listFiles { f ->
-                f.isFile && (f.extension == "csv" || f.name.endsWith(".trigger.json"))
+                f.isFile && f.extension == "csv"
             }?.forEach { file ->
                 zos.putNextEntry(ZipEntry(file.name))
                 file.inputStream().use { it.copyTo(zos) }
@@ -335,7 +354,7 @@ data class ExperimentFileInfo(
 )
 
 /**
- * Shared close-in-finally helper so summary/sidecar failures cannot leak the writer.
+ * Shared close-in-finally helper so summary failures cannot leak the writer.
  * Package-visible for unit tests.
  */
 internal inline fun <T> runRecordingTeardown(
