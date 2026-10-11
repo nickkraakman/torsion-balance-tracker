@@ -30,7 +30,7 @@ If the LED is already on when you first set the ROI, wait until it is off so the
 
 Hysteresis on ROI mean luma versus a dark EMA baseline (updated only while the LED is classified **off**). There is no cooldown: a 1–5 s hold is one ON interval, not a burst of marks.
 
-If ambient light or AE drift rises while the LED is held, the frozen baseline can leave the LED stuck ON. Holds longer than **30 s** are flagged (`suspicious_long_holds` in the summary/sidecar) and an on-screen warning is shown.
+If ambient light or AE drift rises while the LED is held, the frozen baseline can leave the LED stuck ON. Holds longer than **30 s** are flagged (`suspicious_long_holds` in the summary rows; `suspicious_long_hold=true` on the matching `LED_ON` / `LED_OFF` notes) and an on-screen warning is shown.
 
 ## CSV format
 
@@ -44,7 +44,7 @@ timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad,x_arm_px,y_
 |--------|---------|
 | `timestamp_ms` | Time from the first recorded frame, using the camera capture timestamp when the device provides one (not `System.nanoTime()` at processing time). Event and sample rows share this clock. |
 | `kind` | `sample` or `event` |
-| `flags` / `note` | Tracking flags on samples. Events: `SYNC` + note for a manual MARK; `LED_ON` / `LED_OFF` for trigger edges; `LED_SUMMARY` + `key=value` note for the per-run summary. |
+| `flags` / `note` | Tracking flags on samples. Events: `SYNC` + note for a manual MARK; `LED_ON` / `LED_OFF` for trigger edges (note may include comma-free `suspicious_long_hold=true`); `LED_SUMMARY` + `key=value` note for the per-run summary. |
 | `frame_index` | Processed analysis-frame counter from the start of the recording (0, 1, 2, …). ImageAnalysis uses `STRATEGY_KEEP_ONLY_LATEST`, so dropped frames never appear; a gap in `timestamp_ms` of ~2 frame periods means a drop. |
 | `led_on` | `1` or `0` on every sample while LED logging is enabled; empty if logging was off. |
 
@@ -54,7 +54,7 @@ Reconstruct press duration either from `led_on` on sample rows or from `LED_ON`/
 
 Manual **MARK** uses the last processed frame’s capture timestamp (up to one frame early relative to the button press).
 
-### Summary rows and sidecar
+### Summary rows
 
 There is **no `#` comment footer** (those break `pandas.read_csv` / Excel / R when they contain commas). At Stop the app appends normal `event` rows with `flags=LED_SUMMARY` and a comma-free `note` such as:
 
@@ -67,7 +67,7 @@ There is **no `#` comment footer** (those break `pandas.read_csv` / Excel / R wh
 ...,event,,,,,,,,LED_SUMMARY,sparks_est=firing_rate_hz*total_led_on_ms/1000,<frame>,
 ```
 
-A sidecar `*.trigger.json` next to the CSV has the full edge list (Share includes it when present; ZIP export always does).
+The CSV is the single source of truth: reconstruct edges from `LED_ON` / `LED_OFF` rows (`timestamp_ms`, `frame_index`, and optional `suspicious_long_hold=true` in `note`). There is no `*.trigger.json` sidecar.
 
 `press_count` is the number of ON edges (including a hold already in progress at Record, and a hold still down at Stop).
 

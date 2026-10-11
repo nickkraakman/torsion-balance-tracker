@@ -23,7 +23,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.qi.torsionbalance.MainViewModel
 import java.text.SimpleDateFormat
-import java.util.ArrayList
 import java.util.Date
 import java.util.Locale
 
@@ -68,36 +67,16 @@ fun ExperimentsScreen(
                             Button(
                                 onClick = {
                                     val csv = java.io.File(exp.absolutePath)
-                                    val sidecar = java.io.File(
-                                        csv.parentFile,
-                                        csv.nameWithoutExtension + ".trigger.json",
-                                    )
                                     val authority = "${context.packageName}.fileprovider"
-                                    if (sidecar.exists()) {
-                                        val uris = ArrayList(
-                                            listOf(csv, sidecar).map {
-                                                FileProvider.getUriForFile(context, authority, it)
-                                            },
-                                        )
-                                        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                                            type = "*/*"
-                                            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                        context.startActivity(
-                                            Intent.createChooser(intent, "Share CSV + trigger summary"),
-                                        )
-                                    } else {
-                                        val uri = FileProvider.getUriForFile(context, authority, csv)
-                                        val intent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/csv"
-                                            putExtra(Intent.EXTRA_STREAM, uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        }
-                                        context.startActivity(
-                                            Intent.createChooser(intent, "Share CSV"),
-                                        )
+                                    val uri = FileProvider.getUriForFile(context, authority, csv)
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/csv"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
+                                    context.startActivity(
+                                        Intent.createChooser(intent, "Share CSV"),
+                                    )
                                 },
                             ) { Text("Share") }
                             Button(

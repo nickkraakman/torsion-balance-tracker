@@ -18,7 +18,7 @@ Android app that measures torsion-balance beam motion with OpenCV. It tracks a b
 3. For spark runs: Settings → set the LED region (LED off) → enable **Trigger LED logging**.
 4. Tap **Record** to start logging an experiment as CSV. With a saved direction, recording starts immediately — no need to touch a beam that has settled overnight.
 5. Tap **Stop** to end the run.
-6. Tap **Share** under the experiment to export the CSV (and `*.trigger.json` sidecar when present).
+6. Tap **Share** under the experiment to export the CSV.
 
 ### Arm direction
 
@@ -35,11 +35,11 @@ The camera cannot resolve individual sparks (~67/s). Estimate from LED-on time:
 sparks ≈ firing_rate_hz × total_led_on_ms / 1000
 ```
 
-`total_led_on_ms` is in `LED_SUMMARY` event rows at the end of the CSV and in the `*.trigger.json` sidecar.
+`total_led_on_ms` is in `LED_SUMMARY` event rows at the end of the CSV.
 
 ### CSV notes
 
-Each file begins with comma-free `#` metadata lines (`sign_multiplier`, `sign_source`), then the column header. Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` **footer** — those break pandas/Excel/R; preamble `#` lines are fine with `comment='#'`). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF`. Details: [docs/trigger-led.md](docs/trigger-led.md).
+Each file begins with comma-free `#` metadata lines (`sign_multiplier`, `sign_source`), then the column header. Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` **footer** — those break pandas/Excel/R; preamble `#` lines are fine with `comment='#'`). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF` (long holds may note `suspicious_long_hold=true`). The CSV is the sole export; there is no JSON sidecar. Details: [docs/trigger-led.md](docs/trigger-led.md).
 
 The older 555 per-spark flash circuit is [legacy](docs/spark-detector.md): with logging enabled it now yields short `LED_ON`/`LED_OFF` pairs instead of `SYNC auto_spark`.
 
