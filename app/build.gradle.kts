@@ -42,6 +42,10 @@ android {
         // Kotlin 1.9.22 → Compose compiler 1.5.10 (see gradle/libs.versions.toml)
         kotlinCompilerExtensionVersion = libs.versions.compose.compiler.get()
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -68,6 +72,8 @@ dependencies {
     implementation(libs.coroutines.android)
 
     testImplementation("junit:junit:4.13.2")
+    // Desktop OpenCV natives so MarkerTracker synthetic-image tests run on the JVM/CI.
+    testImplementation(libs.opencv.openpnp)
 
     val localOpenCv = file("libs/opencv.aar")
     if (localOpenCv.exists()) {
@@ -75,4 +81,10 @@ dependencies {
     } else {
         implementation(libs.opencv)
     }
+}
+
+// Prefer openpnp's org.opencv.* + desktop natives on the unit-test classpath.
+// The Android AAR's JNI libs do not load on a host JVM.
+configurations.matching { it.name.contains("UnitTest", ignoreCase = true) }.configureEach {
+    exclude(group = "com.quickbirdstudios", module = "opencv")
 }

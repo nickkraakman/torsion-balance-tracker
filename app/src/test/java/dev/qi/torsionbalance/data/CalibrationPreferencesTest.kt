@@ -61,6 +61,10 @@ class CalibrationPreferencesTest {
             blobAreaMin = 25.0,
             blobAreaMax = 9000.0,
             cameraLocked = true,
+            exposureTimeNs = 12_500_000L,
+            isoSensitivity = 100,
+            frameDurationNs = 33_333_333L,
+            focusDistance = 2.5f,
             calibrationComplete = true,
             sampleRate = SampleRate.HZ_10,
             kalmanProcessNoise = 0.01,
@@ -69,9 +73,25 @@ class CalibrationPreferencesTest {
             flashRoiX = 640,
             flashRoiY = 360,
             flashThreshold = 55,
+            lostFrameThreshold = 12,
+            armJumpMaxPx = 25f,
+            refJumpMaxPx = 4f,
         )
         val roundTripped = CalibrationPreferences.stateFromMap(CalibrationPreferences.toMap(original))
         assertEquals(original, roundTripped)
+    }
+
+    @Test
+    fun legacyPrefs_defaultTrackingAndCameraLockFields() {
+        val state = CalibrationPreferences.stateFromMap(
+            mapOf(CalibrationPreferences.Keys.CAMERA_LOCKED to true),
+        )
+        assertTrue(state.cameraLocked)
+        assertEquals(0L, state.exposureTimeNs)
+        assertEquals(0, state.isoSensitivity)
+        assertEquals(10, state.lostFrameThreshold)
+        assertEquals(20f, state.armJumpMaxPx, 0f)
+        assertEquals(3f, state.refJumpMaxPx, 0f)
     }
 
     @Test

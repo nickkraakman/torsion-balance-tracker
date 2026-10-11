@@ -36,6 +36,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
+data class LockedCameraSettings(
+    val exposureTimeNs: Long,
+    val sensitivity: Int,
+    val frameDurationNs: Long,
+    val focusDistance: Float,
+)
+
 @OptIn(ExperimentalCamera2Interop::class)
 class CameraController(
     private val context: Context,
@@ -60,6 +67,8 @@ class CameraController(
     private var lockedExposureTimeNs: Long = 0L
     private var lockedSensitivity: Int = 0
     private var lockedFrameDurationNs: Long = 0L
+    /** True only after a session has had time to converge AWB (or after sampleAndLock). */
+    private var awbLockAllowed: Boolean = false
 
     @Volatile
     private var latestExposureTimeNs: Long = 0L
@@ -106,6 +115,16 @@ class CameraController(
         )
         .build()
 
+    fun currentLockedSettings(): LockedCameraSettings? {
+        if (!hasManualExposure()) return null
+        return LockedCameraSettings(
+            exposureTimeNs = lockedExposureTimeNs,
+            sensitivity = lockedSensitivity,
+            frameDurationNs = lockedFrameDurationNs,
+            focusDistance = if (focusSampled) lockedFocusDistance else 0f,
+        )
+    }
+
     suspend fun bind(
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
@@ -118,6 +137,8 @@ class CameraController(
             frameCallback = onFrame
             val provider = obtainProvider()
             cameraProvider = provider
+            // Fresh session: apply AE/AF without AWB lock so boot gains can converge.
+            awbLockAllowed = false
             bindUseCases(provider, lifecycleOwner, previewView, onFrame)
             if (!isLocked) return@withLock
             // AE lock in the first request of a new session freezes the sensor's
@@ -129,20 +150,31 @@ class CameraController(
                 if (hasManualExposure()) {
                     bindUseCases(provider, lifecycleOwner, previewView, onFrame)
                 }
+            } else {
+                // Manual AE restored; let AWB settle before freezing it.
+                delay(AE_WARMUP_MS)
             }
+            awbLockAllowed = true
             camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
         }
     }
 
     /**
-     * Wait for auto-exposure/focus to settle, sample focus distance, then lock AE (and AF if sampled).
+     * Wait for auto-exposure/focus to settle on the arm-marker region, sample focus,
+     * then lock AE (manual), AF (if sampled), and AWB.
+     *
+     * [meterNormX]/[meterNormY] are 0..1 fractions of the analysis/preview frame
+     * (arm marker). Defaults to frame centre only when the arm seed is unknown.
      */
-    suspend fun sampleAndLock(): Boolean {
+    suspend fun sampleAndLock(
+        meterNormX: Float = 0.5f,
+        meterNormY: Float = 0.5f,
+    ): Boolean {
         sessionMutex.withLock {
             val cam = camera ?: return false
             val camera2Control = Camera2CameraControl.from(cam.cameraControl)
 
-            triggerCenterAutofocus(cam)
+            triggerMeteringAt(cam, meterNormX, meterNormY)
             delay(AE_WARMUP_MS)
 
             synchronized(focusSamples) { focusSamples.clear() }
@@ -164,8 +196,45 @@ class CameraController(
 
             rememberConvergedExposure(cam)
             isLocked = true
+            // Metering warmup already ran — safe to freeze AWB on this session.
+            awbLockAllowed = true
             applyLock(camera2Control)
             return sampled
+        }
+    }
+
+    /**
+     * Restore a previously persisted manual AE + focus lock without re-metering.
+     * Avoids the restart path that used to resample AE at frame centre.
+     * AWB is locked only after a short warmup so boot white-balance can converge.
+     */
+    suspend fun restorePersistedLock(settings: LockedCameraSettings): Boolean {
+        sessionMutex.withLock {
+            if (settings.exposureTimeNs <= 0L || settings.sensitivity <= 0) return false
+            lockedExposureTimeNs = settings.exposureTimeNs
+            lockedSensitivity = settings.sensitivity
+            lockedFrameDurationNs = settings.frameDurationNs.coerceAtLeast(settings.exposureTimeNs)
+            if (settings.focusDistance > 0f) {
+                lockedFocusDistance = settings.focusDistance
+                focusSampled = true
+            } else {
+                focusSampled = false
+                lockedFocusDistance = 0f
+            }
+            isLocked = true
+            awbLockAllowed = false
+            val owner = boundLifecycleOwner
+            val view = boundPreviewView
+            val cb = frameCallback
+            val provider = cameraProvider
+            if (owner != null && view != null && cb != null && provider != null) {
+                bindUseCases(provider, owner, view, cb)
+            }
+            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
+            delay(AE_WARMUP_MS)
+            awbLockAllowed = true
+            camera?.let { applyLock(Camera2CameraControl.from(it.cameraControl)) }
+            return true
         }
     }
 
@@ -173,6 +242,7 @@ class CameraController(
         sessionMutex.withLock {
             isLocked = false
             focusSampled = false
+            awbLockAllowed = false
             lockedFocusDistance = 0f
             lockedExposureTimeNs = 0L
             lockedSensitivity = 0
@@ -187,11 +257,14 @@ class CameraController(
         }
     }
 
-    private fun triggerCenterAutofocus(cam: Camera) {
+    private fun triggerMeteringAt(cam: Camera, normX: Float, normY: Float) {
+        val x = normX.coerceIn(0.05f, 0.95f)
+        val y = normY.coerceIn(0.05f, 0.95f)
         val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+        val point = factory.createPoint(x, y)
         val action = FocusMeteringAction.Builder(
-            factory.createPoint(0.5f, 0.5f),
-            FocusMeteringAction.FLAG_AF,
+            point,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE,
         )
             .setAutoCancelDuration(AE_WARMUP_MS, TimeUnit.MILLISECONDS)
             .build()
@@ -207,6 +280,7 @@ class CameraController(
                 }
             },
             includeAeLockFallback = true,
+            includeAwbLock = awbLockAllowed,
         )
         camera2Control.captureRequestOptions = builder.build()
     }
@@ -259,6 +333,7 @@ class CameraController(
                 }
             },
             includeAeLockFallback = false,
+            includeAwbLock = awbLockAllowed,
         )
     }
 
@@ -272,19 +347,24 @@ class CameraController(
                 }
             },
             includeAeLockFallback = false,
+            includeAwbLock = awbLockAllowed,
         )
     }
 
     /**
-     * Exposure and focus to hold while locked.
+     * Exposure, focus, and AWB to hold while locked.
      *
      * [includeAeLockFallback] is only safe on a session that has already metered.
      * A new session must not set [CaptureRequest.CONTROL_AE_LOCK] until then: the
      * lock freezes the sensor's unset exposure, which is nearly black.
+     *
+     * [includeAwbLock] must also wait for a metered/warmed session — locking AWB on
+     * the first request of a fresh session freezes boot white-balance gains.
      */
     private fun writeLockOptions(
         setOption: RequestOptionSetter,
         includeAeLockFallback: Boolean,
+        includeAwbLock: Boolean,
     ) {
         setOption.set(
             CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
@@ -294,6 +374,9 @@ class CameraController(
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
             CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         )
+        if (includeAwbLock) {
+            setOption.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+        }
         if (hasManualExposure()) {
             setOption.set(CaptureRequest.CONTROL_AE_LOCK, false)
             setOption.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)

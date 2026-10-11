@@ -34,6 +34,7 @@ import dev.qi.torsionbalance.MainViewModel
 import dev.qi.torsionbalance.SampleRate
 import dev.qi.torsionbalance.data.ExperimentCsvFormat
 import dev.qi.torsionbalance.vision.KalmanFilter1D
+import dev.qi.torsionbalance.vision.MarkerTrackLogic
 import kotlin.math.log10
 import kotlin.math.pow
 
@@ -198,6 +199,57 @@ fun SettingsScreen(
             Button(onClick = { viewModel.updateBlobAreas(blobMin.toDouble(), blobMax.toDouble()) }) {
                 Text("Apply blob filters")
             }
+
+            var lostFrames by remember {
+                mutableStateOf(calibration.lostFrameThreshold.toFloat())
+            }
+            var armJump by remember { mutableStateOf(calibration.armJumpMaxPx) }
+            var refJump by remember { mutableStateOf(calibration.refJumpMaxPx) }
+            LaunchedEffect(
+                calibration.lostFrameThreshold,
+                calibration.armJumpMaxPx,
+                calibration.refJumpMaxPx,
+            ) {
+                lostFrames = calibration.lostFrameThreshold.toFloat()
+                armJump = calibration.armJumpMaxPx
+                refJump = calibration.refJumpMaxPx
+            }
+            Text(
+                "Marker lost after (frames): ${lostFrames.toInt()}",
+                modifier = Modifier.padding(top = 16.dp),
+            )
+            Text(
+                "Shorter gaps keep the last position and flag the row HELD " +
+                    "(default ${MarkerTrackLogic.DEFAULT_LOST_FRAME_THRESHOLD}).",
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            Slider(
+                value = lostFrames,
+                onValueChange = { lostFrames = it },
+                valueRange = MarkerTrackLogic.LOST_FRAME_MIN.toFloat()..
+                    MarkerTrackLogic.LOST_FRAME_MAX.toFloat(),
+            )
+            Text("Arm jump gate (px): ${armJump.toInt()}")
+            Slider(
+                value = armJump,
+                onValueChange = { armJump = it },
+                valueRange = MarkerTrackLogic.ARM_JUMP_MIN_PX..MarkerTrackLogic.ARM_JUMP_MAX_PX,
+            )
+            Text("Reference jump gate (px): ${"%.1f".format(refJump)}")
+            Slider(
+                value = refJump,
+                onValueChange = { refJump = it },
+                valueRange = MarkerTrackLogic.REF_JUMP_MIN_PX..MarkerTrackLogic.REF_JUMP_MAX_PX,
+            )
+            Button(
+                onClick = {
+                    viewModel.updateTrackingRobustness(
+                        lostFrameThreshold = lostFrames.toInt(),
+                        armJumpMaxPx = armJump,
+                        refJumpMaxPx = refJump,
+                    )
+                },
+            ) { Text("Apply tracking robustness") }
 
             Text("Trigger LED logging", modifier = Modifier.padding(top = 16.dp))
             Text(

@@ -37,9 +37,17 @@ sparks ≈ firing_rate_hz × total_led_on_ms / 1000
 
 `total_led_on_ms` is in `LED_SUMMARY` event rows at the end of the CSV.
 
+### Marker tracking
+
+Arm and reference dots are found with Otsu + contours in a small ROI around the last
+known position. Short dropouts keep the last position and set `flags=HELD`; longer
+gaps become `ARM_LOST` / `REF_LOST`. Edge-clipped contours and large per-frame jumps
+are rejected. Camera lock persists manual AE/ISO/focus and meters on the arm marker.
+Details: [docs/marker-tracking.md](docs/marker-tracking.md).
+
 ### CSV notes
 
-Each file begins with comma-free `#` metadata lines (`sign_multiplier`, `sign_source`), then the column header. Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` **footer** — those break pandas/Excel/R; preamble `#` lines are fine with `comment='#'`). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF` (long holds may note `suspicious_long_hold=true`). The CSV is the sole export; there is no JSON sidecar. Details: [docs/trigger-led.md](docs/trigger-led.md).
+Each file begins with comma-free `#` metadata lines (`sign_multiplier`, `sign_source`), then the column header. Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns (`frame_index`, `led_on`, then detector diagnostics) are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` **footer** — those break pandas/Excel/R; preamble `#` lines are fine with `comment='#'`). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF` (long holds may note `suspicious_long_hold=true`). The CSV is the sole export; there is no JSON sidecar. Details: [docs/trigger-led.md](docs/trigger-led.md), [docs/marker-tracking.md](docs/marker-tracking.md).
 
 The older 555 per-spark flash circuit is [legacy](docs/spark-detector.md): with logging enabled it now yields short `LED_ON`/`LED_OFF` pairs instead of `SYNC auto_spark`.
 
