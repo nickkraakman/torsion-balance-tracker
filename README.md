@@ -14,11 +14,18 @@ Android app that measures torsion-balance beam motion with OpenCV. It tracks a b
 ## Using the app
 
 1. Open **Torsion Balance**.
-2. Tap **Calibrate** and follow the on-screen steps.
+2. Tap **Calibrate** and follow the on-screen steps. The last step learns arm direction with a short nudge (increasing image `xRel` → +θ or −θ). That sign is saved in DataStore; later calibrations and recordings skip the nudge while the phone stays in the same mount.
 3. For spark runs: Settings → set the LED region (LED off) → enable **Trigger LED logging**.
-4. Tap **Record** to start logging an experiment as CSV.
+4. Tap **Record** to start logging an experiment as CSV. With a saved direction, recording starts immediately — no need to touch a beam that has settled overnight.
 5. Tap **Stop** to end the run.
 6. Tap **Share** under the experiment to export the CSV (and `*.trigger.json` sidecar when present).
+
+### Arm direction
+
+- Live UI shows `Direction: saved (+1) – Recalibrate` (or `manual` / `nudged`) when a sign is configured.
+- **Recalibrate direction** (main screen or Settings) clears the saved sign and runs the nudge again.
+- Settings also lets you choose **+1** / **−1** directly; the choice persists immediately (no Apply).
+- Each CSV starts with `# sign_multiplier=` / `# sign_source=` metadata (`saved`, `manual`, or `nudged`). Details: [docs/arm-direction.md](docs/arm-direction.md).
 
 ### Sparks per run
 
@@ -32,7 +39,7 @@ sparks ≈ firing_rate_hz × total_led_on_ms / 1000
 
 ### CSV notes
 
-Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` footer — those break pandas/Excel/R). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF`. Details: [docs/trigger-led.md](docs/trigger-led.md).
+Each file begins with comma-free `#` metadata lines (`sign_multiplier`, `sign_source`), then the column header. Sample and event rows share a camera-capture timeline (`timestamp_ms`). Extra columns `frame_index` and `led_on` are appended to the original header. Per-run totals are normal `LED_SUMMARY` event rows (no `#` **footer** — those break pandas/Excel/R; preamble `#` lines are fine with `comment='#'`). Manual MARK events are still `flags=SYNC` (timestamp = last processed frame, up to one frame early). Trigger edges are `LED_ON` / `LED_OFF`. Details: [docs/trigger-led.md](docs/trigger-led.md).
 
 The older 555 per-spark flash circuit is [legacy](docs/spark-detector.md): with logging enabled it now yields short `LED_ON`/`LED_OFF` pairs instead of `SYNC auto_spark`.
 

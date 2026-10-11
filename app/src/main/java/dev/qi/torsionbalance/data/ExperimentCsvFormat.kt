@@ -1,13 +1,33 @@
 package dev.qi.torsionbalance.data
 
+import dev.qi.torsionbalance.SignSource
 import dev.qi.torsionbalance.TrackingResult
 import java.util.Locale
+import kotlin.math.sign
 
 object ExperimentCsvFormat {
     const val COLUMN_COUNT = 13
     const val HEADER =
         "timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad," +
             "x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on"
+
+    /**
+     * Preamble comment lines written before [HEADER].
+     * Comma-free so tools that ignore `#` comments (or skip lines before the header) stay safe.
+     */
+    fun metadataLines(signMultiplier: Double, signSource: SignSource): List<String> {
+        val source = when (signSource) {
+            SignSource.NONE -> "saved" // recording should not use NONE; fall back for safety
+            else -> signSource.csvValue()
+        }
+        return listOf(
+            "# sign_multiplier=${formatSignLabel(signMultiplier)}",
+            "# sign_source=$source",
+        )
+    }
+
+    fun formatSignLabel(signMultiplier: Double): String =
+        if (sign(signMultiplier) < 0.0) "-1" else "+1"
 
     fun sampleRow(
         timestampMs: Long,

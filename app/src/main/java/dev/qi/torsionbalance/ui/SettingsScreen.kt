@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import dev.qi.torsionbalance.MainViewModel
 import dev.qi.torsionbalance.SampleRate
+import dev.qi.torsionbalance.data.ExperimentCsvFormat
 import dev.qi.torsionbalance.vision.KalmanFilter1D
 import kotlin.math.log10
 import kotlin.math.pow
@@ -44,6 +45,7 @@ fun SettingsScreen(
 ) {
     val calibration by viewModel.calibration.collectAsState()
     val ledMonitor by viewModel.ledMonitor.collectAsState()
+    val signSource by viewModel.signSource.collectAsState()
     val context = LocalContext.current
 
     var armLength by remember { mutableStateOf("") }
@@ -100,7 +102,44 @@ fun SettingsScreen(
         ) {
             Text("Scale: ${calibration.mmPerPixel} mm/px")
             Text("Zero x_rel: ${calibration.zeroXRelPx} px")
-            Text("Sign: ${calibration.signMultiplier}")
+
+            Text("Arm direction (+θ sign)", modifier = Modifier.padding(top = 16.dp))
+            Text(
+                if (calibration.signConfigured) {
+                    val label = ExperimentCsvFormat.formatSignLabel(calibration.signMultiplier)
+                    "Direction: ${signSource.csvValue()} ($label)"
+                } else {
+                    "Direction: not set — choose below or nudge during calibration"
+                },
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            Text(
+                "Whether increasing image xRel is +θ (+1) or -θ (−1). " +
+                    "Saved after the first nudge (or a manual choice) so overnight " +
+                    "baselines can start recording without touching the beam.",
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(
+                    selected = calibration.signConfigured && calibration.signMultiplier > 0,
+                    onClick = { viewModel.setSignMultiplier(1.0) },
+                )
+                Text("+1 (xRel ↑ → +θ)")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(
+                    selected = calibration.signConfigured && calibration.signMultiplier < 0,
+                    onClick = { viewModel.setSignMultiplier(-1.0) },
+                )
+                Text("−1 (xRel ↑ → −θ)")
+            }
+            Button(
+                onClick = {
+                    viewModel.recalibrateDirection()
+                    onBack()
+                },
+                modifier = Modifier.padding(vertical = 8.dp),
+            ) { Text("Recalibrate direction") }
 
             OutlinedTextField(
                 value = armLength,

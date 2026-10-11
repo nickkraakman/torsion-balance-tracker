@@ -14,6 +14,7 @@ object CalibrationPreferences {
         const val MM_PER_PIXEL = "mm_per_pixel"
         const val ZERO_X_REL_PX = "zero_x_rel_px"
         const val SIGN_MULTIPLIER = "sign_multiplier"
+        const val SIGN_CONFIGURED = "sign_configured"
         const val ARM_LENGTH_MM = "arm_length_mm"
         const val ARM_SEED_X = "arm_seed_x"
         const val ARM_SEED_Y = "arm_seed_y"
@@ -37,6 +38,11 @@ object CalibrationPreferences {
             mmPerPixel = prefs.doubleOr(Keys.MM_PER_PIXEL, 0.0),
             zeroXRelPx = prefs.doubleOr(Keys.ZERO_X_REL_PX, 0.0),
             signMultiplier = prefs.doubleOr(Keys.SIGN_MULTIPLIER, 1.0),
+            // Legacy installs completed calibration via nudge but have no sign_configured key.
+            signConfigured = when (val configured = prefs[Keys.SIGN_CONFIGURED]) {
+                is Boolean -> configured
+                else -> prefs.booleanOr(Keys.CALIBRATION_COMPLETE, false)
+            },
             armLengthMm = prefs.doubleOr(Keys.ARM_LENGTH_MM, 0.0),
             armSeedX = prefs.floatOr(Keys.ARM_SEED_X, 0f),
             armSeedY = prefs.floatOr(Keys.ARM_SEED_Y, 0f),
@@ -69,6 +75,7 @@ object CalibrationPreferences {
             Keys.MM_PER_PIXEL to state.mmPerPixel,
             Keys.ZERO_X_REL_PX to state.zeroXRelPx,
             Keys.SIGN_MULTIPLIER to state.signMultiplier,
+            Keys.SIGN_CONFIGURED to state.signConfigured,
             Keys.ARM_LENGTH_MM to state.armLengthMm,
             Keys.ARM_SEED_X to state.armSeedX,
             Keys.ARM_SEED_Y to state.armSeedY,

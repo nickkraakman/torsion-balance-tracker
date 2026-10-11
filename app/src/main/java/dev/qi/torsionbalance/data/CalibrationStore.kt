@@ -23,6 +23,7 @@ class CalibrationStore(private val context: Context) {
         val MM_PER_PIXEL = doublePreferencesKey(CalibrationPreferences.Keys.MM_PER_PIXEL)
         val ZERO_X_REL_PX = doublePreferencesKey(CalibrationPreferences.Keys.ZERO_X_REL_PX)
         val SIGN_MULTIPLIER = doublePreferencesKey(CalibrationPreferences.Keys.SIGN_MULTIPLIER)
+        val SIGN_CONFIGURED = booleanPreferencesKey(CalibrationPreferences.Keys.SIGN_CONFIGURED)
         val ARM_LENGTH_MM = doublePreferencesKey(CalibrationPreferences.Keys.ARM_LENGTH_MM)
         val ARM_SEED_X = floatPreferencesKey(CalibrationPreferences.Keys.ARM_SEED_X)
         val ARM_SEED_Y = floatPreferencesKey(CalibrationPreferences.Keys.ARM_SEED_Y)
@@ -62,6 +63,7 @@ class CalibrationStore(private val context: Context) {
                 CalibrationPreferences.Keys.MM_PER_PIXEL to prefs[Keys.MM_PER_PIXEL],
                 CalibrationPreferences.Keys.ZERO_X_REL_PX to prefs[Keys.ZERO_X_REL_PX],
                 CalibrationPreferences.Keys.SIGN_MULTIPLIER to prefs[Keys.SIGN_MULTIPLIER],
+                CalibrationPreferences.Keys.SIGN_CONFIGURED to prefs[Keys.SIGN_CONFIGURED],
                 CalibrationPreferences.Keys.ARM_LENGTH_MM to prefs[Keys.ARM_LENGTH_MM],
                 CalibrationPreferences.Keys.ARM_SEED_X to prefs[Keys.ARM_SEED_X],
                 CalibrationPreferences.Keys.ARM_SEED_Y to prefs[Keys.ARM_SEED_Y],
@@ -87,6 +89,7 @@ class CalibrationStore(private val context: Context) {
         prefs[Keys.MM_PER_PIXEL] = encoded[CalibrationPreferences.Keys.MM_PER_PIXEL] as Double
         prefs[Keys.ZERO_X_REL_PX] = encoded[CalibrationPreferences.Keys.ZERO_X_REL_PX] as Double
         prefs[Keys.SIGN_MULTIPLIER] = encoded[CalibrationPreferences.Keys.SIGN_MULTIPLIER] as Double
+        prefs[Keys.SIGN_CONFIGURED] = encoded[CalibrationPreferences.Keys.SIGN_CONFIGURED] as Boolean
         prefs[Keys.ARM_LENGTH_MM] = encoded[CalibrationPreferences.Keys.ARM_LENGTH_MM] as Double
         prefs[Keys.ARM_SEED_X] = encoded[CalibrationPreferences.Keys.ARM_SEED_X] as Float
         prefs[Keys.ARM_SEED_Y] = encoded[CalibrationPreferences.Keys.ARM_SEED_Y] as Float

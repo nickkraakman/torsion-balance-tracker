@@ -44,6 +44,8 @@ unzip -q -o /tmp/platform-tools-darwin.zip -d .tools
 
 Arm length is the radius from the pivot to the moving dot, in millimetres. The angle is `atan2(displacementMm, armLengthMm)`.
 
+Arm direction (`sign_multiplier` ±1) is learned by a one-time nudge (or chosen in Settings) and persisted in DataStore so overnight baselines can record without touching the beam. See [docs/arm-direction.md](docs/arm-direction.md).
+
 ## Cloud Agent
 
 The image JDK is 21, inside AGP 8.x's supported range (17–24). The Android SDK lives at `/opt/android-sdk`. Login shells export `ANDROID_HOME` and `ANDROID_SDK_ROOT` from `/etc/profile.d/android-sdk.sh`, and `adb` on `PATH` is that SDK's platform-tools (1.0.41 or newer). Install writes gitignored `local.properties` with `sdk.dir=/opt/android-sdk`.
