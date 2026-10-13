@@ -37,18 +37,18 @@ If ambient light or AE drift rises while the LED is held, the frozen baseline ca
 Header (new columns are appended so older parsers that ignore extras still work):
 
 ```
-timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad,x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on,arm_blob_area,ref_blob_area,arm_threshold,ref_threshold,arm_roi_mean,ref_roi_mean,arm_candidates,ref_candidates,arm_match_score,ref_match_score,exposure_time_ns,iso,ae_mode,ae_lock,awb_lock,frame_mean,lighting_event
+timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad,x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on,arm_blob_area,ref_blob_area,arm_threshold,ref_threshold,arm_roi_mean,ref_roi_mean,arm_candidates,ref_candidates,arm_match_score,ref_match_score,exposure_time_ns,iso,frame_mean,lighting_event
 ```
 
 | Column | Meaning |
 |--------|---------|
 | `timestamp_ms` | Time from the first recorded frame, using the camera capture timestamp when the device provides one (not `System.nanoTime()` at processing time). Event and sample rows share this clock. |
 | `kind` | `sample` or `event` |
-| `flags` / `note` | Tracking flags on samples (`OK`, `HELD`, `ARM_LOST`, …). Events: `SYNC` + note for a manual MARK; `LED_ON` / `LED_OFF` for trigger edges (note may include comma-free `suspicious_long_hold=true`); `LED_SUMMARY` + `key=value` note for the per-run summary. |
+| `flags` / `note` | Tracking flags on samples (`OK`, `HELD`, `ARM_LOST`, …). Events: `SYNC` + note for a manual MARK; `LED_ON` / `LED_OFF` for trigger edges (note may include comma-free `suspicious_long_hold=true`); `LED_SUMMARY` + `key=value` note for the per-run summary; `AE_UNLOCKED` / `AWB_UNLOCKED` (once per run) if a camera lock drops. |
 | `frame_index` | Processed analysis-frame counter from the start of the recording (0, 1, 2, …). ImageAnalysis uses `STRATEGY_KEEP_ONLY_LATEST`, so dropped frames never appear; a gap in `timestamp_ms` of ~2 frame periods means a drop. |
 | `led_on` | `1` or `0` on every sample while LED logging is enabled; empty if logging was off. |
 | `arm_*` / `ref_*` diagnostics | Blob area, threshold used, local background mean, candidate count, match score — see [marker-tracking.md](marker-tracking.md). |
-| `exposure_time_ns` … `lighting_event` | Per-frame camera exposure / ISO / AE and AWB lock state, whole-frame mean luma, and the lighting-event flag — see [marker-tracking.md](marker-tracking.md). Empty on event rows. |
+| `exposure_time_ns` … `lighting_event` | Per-frame camera exposure and ISO, whole-frame mean luma, and the lighting-event flag — see [marker-tracking.md](marker-tracking.md). Empty on event rows. AE mode and AE / AWB lock state are in the `#` preamble, not columns. |
 
 While LED logging is enabled, **every processed frame is written as a sample**, even if Settings → Sample rate is lower. That keeps `led_on` at camera-frame resolution. With logging off, sample-rate thinning still applies (`frame_index` still counts processed frames, so thinned files skip indices).
 

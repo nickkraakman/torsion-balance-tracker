@@ -249,15 +249,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     hadOpenHoldBeforeFrame = hadOpenHold,
                 )
             }
+            // Checked on every processed frame so sample-rate thinning cannot hide a lock drop.
+            val camera = cameraController.captureMetadataFor(captureNs)
+            recorder.noteCameraState(timestampMs, frameIndex, camera)
             // LED state must be on every processed frame; sample-rate thinning would drop edges.
             if (ledLogging || shouldEmitSample(timestampMs)) {
-                recorder.writeSample(
-                    result,
-                    timestampMs,
-                    frameIndex,
-                    ledOn,
-                    cameraController.captureMetadataFor(captureNs),
-                )
+                recorder.writeSample(result, timestampMs, frameIndex, ledOn, camera)
                 _recordingSampleCount.update { it + 1 }
             }
             _recordingElapsedMs.value = timestampMs
@@ -675,7 +672,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val source = _signSource.value.let {
             if (it == SignSource.NONE) SignSource.SAVED else it
         }
-        recorder.start(name, signMultiplier = cal.signMultiplier, signSource = source)
+        recorder.start(
+            name,
+            signMultiplier = cal.signMultiplier,
+            signSource = source,
+            camera = cameraController.latestCaptureMetadata(),
+        )
         _appMode.value = AppMode.RECORDING
         _recordingSampleCount.value = 0
         _recordingElapsedMs.value = 0L

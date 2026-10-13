@@ -32,12 +32,18 @@ are treated as configured (the nudge had already run).
 
 ## CSV metadata
 
-Every recording writes two preamble lines before the column header:
+Every recording starts with these preamble lines before the column header:
 
 ```
 # sign_multiplier=+1
 # sign_source=saved
+# ae_mode=off
+# ae_lock=0
+# awb_lock=1
 ```
+
+The last three are the camera's AE mode and AE / AWB lock state at Record; see
+[marker-tracking.md](marker-tracking.md#csv-diagnostics).
 
 | `sign_source` | Meaning |
 |---------------|---------|

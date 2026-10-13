@@ -41,6 +41,9 @@ class CaptureMetadataBuffer(
         }
     }
 
+    /** The most recently added capture result, or null when empty. */
+    fun latest(): CaptureFrameMetadata? = synchronized(entries) { entries.lastOrNull() }
+
     fun clear() {
         synchronized(entries) { entries.clear() }
     }

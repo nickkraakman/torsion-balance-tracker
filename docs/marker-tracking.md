@@ -96,7 +96,7 @@ New columns are **appended** so older parsers that ignore extras keep working:
 ```
 …,frame_index,led_on,arm_blob_area,ref_blob_area,arm_threshold,ref_threshold,
 arm_roi_mean,ref_roi_mean,arm_candidates,ref_candidates,arm_match_score,ref_match_score,
-exposure_time_ns,iso,ae_mode,ae_lock,awb_lock,frame_mean,lighting_event
+exposure_time_ns,iso,frame_mean,lighting_event
 ```
 
 | Column | Meaning |
@@ -107,13 +107,36 @@ exposure_time_ns,iso,ae_mode,ae_lock,awb_lock,frame_mean,lighting_event
 | `arm_candidates` / `ref_candidates` | Contours in area range before scoring (includes border-clipped) |
 | `arm_match_score` / `ref_match_score` | Best candidate score in `[0,1]`-ish; empty on a miss |
 | `exposure_time_ns` / `iso` | Actual sensor exposure time and sensitivity from the Camera2 capture result of that frame |
-| `ae_mode` | `off` = manual exposure (the camera lock; exposure and ISO are fixed), `on` = auto exposure, etc. |
-| `ae_lock` / `awb_lock` | `1` / `0` as reported by the capture result |
 | `frame_mean` | Whole-frame mean luma (input to lighting-event detection) |
 | `lighting_event` | `1` while a lighting event is in progress (row is `HELD`) |
 
 Camera columns are matched to the frame by sensor timestamp (nearest result within one
 frame period); they are empty if the device reported nothing close.
+
+AE mode and AE / AWB lock state are not columns. They are written once, in the `#`
+preamble, from the latest capture result when Record is pressed:
+
+```
+# ae_mode=off
+# ae_lock=0
+# awb_lock=1
+```
+
+`ae_mode=off` is manual exposure (the camera lock; exposure and ISO are fixed),
+`on` is auto exposure; `ae_lock` / `awb_lock` are `1` / `0` as reported by the
+capture result. Any value is `unknown` if no capture result had arrived yet.
+Exposure counts as held while `ae_mode=off` **or** `ae_lock=1`.
+
+Every processed frame's capture result is still checked. If a lock that was held
+(at the start or later in the run) is reported off, one event row is written, the
+first time only for each lock:
+
+| `flags` | `note` |
+|---------|--------|
+| `AE_UNLOCKED` | AE state it dropped to, e.g. `ae_mode=on ae_lock=0` |
+| `AWB_UNLOCKED` | `awb_lock=0` |
+
+The `exposure_time_ns` / `iso` columns show what the exposure did after that.
 
 Sample rows with `flags=HELD` still write the held `x_*_px` / `y_*_px` so you can
 plot continuity; treat `displacement_mm_*` as missing on those rows.

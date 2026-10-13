@@ -14,8 +14,8 @@ import org.junit.Test
 class ExperimentCsvFormatTest {
 
     @Test
-    fun headerHasThirtyColumns() {
-        assertEquals(30, ExperimentCsvFormat.COLUMN_COUNT)
+    fun headerHasTwentySevenColumns() {
+        assertEquals(27, ExperimentCsvFormat.COLUMN_COUNT)
         assertEquals(ExperimentCsvFormat.COLUMN_COUNT, ExperimentCsvFormat.HEADER.split(",").size)
         assertTrue(ExperimentCsvFormat.HEADER.contains("arm_blob_area"))
         assertTrue(ExperimentCsvFormat.HEADER.contains("ref_match_score"))
@@ -29,7 +29,7 @@ class ExperimentCsvFormatTest {
     @Test
     fun metadataLines_recordSignAndSourceWithoutCommas() {
         val lines = ExperimentCsvFormat.metadataLines(-1.0, SignSource.SAVED)
-        assertEquals(2, lines.size)
+        assertEquals(5, lines.size)
         assertEquals("# sign_multiplier=-1", lines[0])
         assertEquals("# sign_source=saved", lines[1])
         lines.forEach { line ->
@@ -42,11 +42,41 @@ class ExperimentCsvFormatTest {
     fun metadataLines_manualAndNudgedSources() {
         assertEquals(
             listOf("# sign_multiplier=+1", "# sign_source=manual"),
-            ExperimentCsvFormat.metadataLines(1.0, SignSource.MANUAL),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.MANUAL).take(2),
         )
         assertEquals(
             listOf("# sign_multiplier=+1", "# sign_source=nudged"),
-            ExperimentCsvFormat.metadataLines(1.0, SignSource.NUDGED),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.NUDGED).take(2),
+        )
+    }
+
+    @Test
+    fun metadataLines_recordAeModeAndLocksFromStartCapture() {
+        val lines = ExperimentCsvFormat.metadataLines(
+            1.0,
+            SignSource.SAVED,
+            CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 0, aeLock = false, awbLock = true),
+        )
+        assertEquals(
+            listOf("# ae_mode=off", "# ae_lock=0", "# awb_lock=1"),
+            lines.drop(2),
+        )
+        lines.forEach { assertFalse(it.contains(",")) }
+    }
+
+    @Test
+    fun metadataLines_unknownCameraStateWithoutCapture() {
+        assertEquals(
+            listOf("# ae_mode=unknown", "# ae_lock=unknown", "# awb_lock=unknown"),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.SAVED).drop(2),
+        )
+        assertEquals(
+            listOf("# ae_mode=on", "# ae_lock=unknown", "# awb_lock=unknown"),
+            ExperimentCsvFormat.metadataLines(
+                1.0,
+                SignSource.SAVED,
+                CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 1),
+            ).drop(2),
         )
     }
 
@@ -153,7 +183,7 @@ class ExperimentCsvFormatTest {
         // Older parsers that index the first 23 columns keep working.
         assertTrue(ExperimentCsvFormat.HEADER.startsWith("$legacy,"))
         assertEquals(
-            listOf("exposure_time_ns", "iso", "ae_mode", "ae_lock", "awb_lock", "frame_mean", "lighting_event"),
+            listOf("exposure_time_ns", "iso", "frame_mean", "lighting_event"),
             ExperimentCsvFormat.HEADER.removePrefix("$legacy,").split(","),
         )
     }
@@ -182,9 +212,6 @@ class ExperimentCsvFormatTest {
         fun col(name: String) = cols[header.indexOf(name)]
         assertEquals("16666666", col("exposure_time_ns"))
         assertEquals("400", col("iso"))
-        assertEquals("off", col("ae_mode"))
-        assertEquals("0", col("ae_lock"))
-        assertEquals("1", col("awb_lock"))
         assertEquals("72.25000", col("frame_mean"))
         assertEquals("1", col("lighting_event"))
         assertEquals("HELD", col("flags"))
@@ -200,9 +227,9 @@ class ExperimentCsvFormatTest {
         )
         val cols = row.split(",")
         assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
-        assertEquals(listOf("", "", "", "", ""), cols.subList(23, 28))
-        assertEquals("50.00000", cols[28])
-        assertEquals("0", cols[29])
+        assertEquals(listOf("", ""), cols.subList(23, 25))
+        assertEquals("50.00000", cols[25])
+        assertEquals("0", cols[26])
     }
 
     @Test
@@ -211,6 +238,24 @@ class ExperimentCsvFormatTest {
         assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
         assertEquals("1", cols[12])
         assertTrue(cols.drop(13).all { it.isEmpty() })
+    }
+
+    @Test
+    fun lockDropRowsAreEventRowsWithCommaFreeNotes() {
+        val camera = CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 1, aeLock = false, awbLock = false)
+        val ae = ExperimentCsvFormat.lockDropRow(500, CameraLockDrop.AE, camera, 15, null).split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, ae.size)
+        assertEquals("event", ae[1])
+        assertEquals("AE_UNLOCKED", ae[9])
+        assertEquals("ae_mode=on ae_lock=0", ae[10])
+        assertEquals("15", ae[11])
+        assertTrue(ae.drop(13).all { it.isEmpty() })
+
+        val awb = ExperimentCsvFormat.lockDropRow(500, CameraLockDrop.AWB, camera, 15, true).split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, awb.size)
+        assertEquals("AWB_UNLOCKED", awb[9])
+        assertEquals("awb_lock=0", awb[10])
+        assertEquals("1", awb[12])
     }
 
     @Test

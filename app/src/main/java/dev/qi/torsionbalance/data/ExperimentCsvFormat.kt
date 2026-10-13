@@ -9,16 +9,16 @@ import kotlin.math.sign
 object ExperimentCsvFormat {
     /**
      * Original 11 + frame_index + led_on + 10 detector diagnostic columns
-     * + 5 camera capture columns + 2 lighting columns.
+     * + 2 camera capture columns + 2 lighting columns.
      */
-    const val COLUMN_COUNT = 30
+    const val COLUMN_COUNT = 27
     const val HEADER =
         "timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad," +
             "x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on," +
             "arm_blob_area,ref_blob_area,arm_threshold,ref_threshold," +
             "arm_roi_mean,ref_roi_mean,arm_candidates,ref_candidates," +
             "arm_match_score,ref_match_score," +
-            "exposure_time_ns,iso,ae_mode,ae_lock,awb_lock,frame_mean,lighting_event"
+            "exposure_time_ns,iso,frame_mean,lighting_event"
 
     /** Columns through `led_on`; event rows leave everything after it empty. */
     private const val EVENT_COLUMN_COUNT = 13
@@ -26,8 +26,14 @@ object ExperimentCsvFormat {
     /**
      * Preamble comment lines written before [HEADER].
      * Comma-free so tools that ignore `#` comments (or skip lines before the header) stay safe.
+     * [camera] is the latest capture result when recording starts; its AE mode and AE / AWB
+     * lock state are written as `unknown` when it is null or the device did not report them.
      */
-    fun metadataLines(signMultiplier: Double, signSource: SignSource): List<String> {
+    fun metadataLines(
+        signMultiplier: Double,
+        signSource: SignSource,
+        camera: CaptureFrameMetadata? = null,
+    ): List<String> {
         val source = when (signSource) {
             SignSource.NONE -> "saved" // recording should not use NONE; fall back for safety
             else -> signSource.csvValue()
@@ -35,6 +41,9 @@ object ExperimentCsvFormat {
         return listOf(
             "# sign_multiplier=${formatSignLabel(signMultiplier)}",
             "# sign_source=$source",
+            "# ae_mode=${camera?.aeMode?.let { aeModeName(it) } ?: UNKNOWN}",
+            "# ae_lock=${boolCell(camera?.aeLock).ifEmpty { UNKNOWN }}",
+            "# awb_lock=${boolCell(camera?.awbLock).ifEmpty { UNKNOWN }}",
         )
     }
 
@@ -79,9 +88,6 @@ object ExperimentCsvFormat {
             d.refMatchScore?.let { fmt(it) } ?: "",
             camera?.exposureTimeNs?.toString() ?: "",
             camera?.iso?.toString() ?: "",
-            camera?.aeMode?.let { aeModeName(it) } ?: "",
-            boolCell(camera?.aeLock),
-            boolCell(camera?.awbLock),
             d.frameMeanLuma?.let { fmt(it) } ?: "",
             boolCell(d.lightingEvent),
         ).joinToString(",")
@@ -104,7 +110,29 @@ object ExperimentCsvFormat {
     }
 
     /**
-     * Event row. [flags] is SYNC for a manual mark, LED_ON / LED_OFF for trigger edges.
+     * Event row marking the first frame a lock held earlier in the run was reported off.
+     * Flags `AE_UNLOCKED` / `AWB_UNLOCKED`; the note is the comma-free state it dropped to.
+     */
+    fun lockDropRow(
+        timestampMs: Long,
+        drop: CameraLockDrop,
+        camera: CaptureFrameMetadata,
+        frameIndex: Long,
+        ledOn: Boolean?,
+    ): String {
+        val (flags, note) = when (drop) {
+            CameraLockDrop.AE -> "AE_UNLOCKED" to
+                "ae_mode=${camera.aeMode?.let { aeModeName(it) } ?: UNKNOWN} " +
+                "ae_lock=${boolCell(camera.aeLock).ifEmpty { UNKNOWN }}"
+            CameraLockDrop.AWB -> "AWB_UNLOCKED" to
+                "awb_lock=${boolCell(camera.awbLock).ifEmpty { UNKNOWN }}"
+        }
+        return eventRow(timestampMs, flags, note, frameIndex, ledOn)
+    }
+
+    /**
+     * Event row. [flags] is SYNC for a manual mark, LED_ON / LED_OFF for trigger edges,
+     * AE_UNLOCKED / AWB_UNLOCKED for a lock drop (see [lockDropRow]).
      * Extra columns (frame_index, led_on, then empty diagnostic / camera / lighting cells)
      * are appended so older parsers that stop at [note] still work.
      */
@@ -118,6 +146,8 @@ object ExperimentCsvFormat {
         val emptyTail = ",".repeat(COLUMN_COUNT - EVENT_COLUMN_COUNT)
         return "$timestampMs,event,,,,,,,,$flags,$note,$frameIndex,${ledCell(ledOn)}$emptyTail"
     }
+
+    private const val UNKNOWN = "unknown"
 
     private fun ledCell(ledOn: Boolean?) = boolCell(ledOn)
 

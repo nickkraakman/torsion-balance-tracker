@@ -10,6 +10,15 @@ class CaptureMetadataBufferTest {
     private fun meta(ts: Long, iso: Int) = CaptureFrameMetadata(sensorTimestampNs = ts, iso = iso)
 
     @Test
+    fun latestIsMostRecentlyAdded() {
+        val b = CaptureMetadataBuffer()
+        assertNull(b.latest())
+        b.put(meta(1_000_000_000L, 100))
+        b.put(meta(1_033_333_333L, 200))
+        assertEquals(200, b.latest()?.iso)
+    }
+
+    @Test
     fun exactTimestampMatchWins() {
         val b = CaptureMetadataBuffer()
         b.put(meta(1_000_000_000L, 100))

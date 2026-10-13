@@ -95,6 +95,9 @@ class CameraController(
      */
     fun captureMetadataFor(timestampNs: Long): CaptureFrameMetadata? = captureMetadata.lookup(timestampNs)
 
+    /** Most recent capture result (AE mode and AE / AWB lock state for the CSV preamble). */
+    fun latestCaptureMetadata(): CaptureFrameMetadata? = captureMetadata.latest()
+
     private val focusCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
