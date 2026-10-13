@@ -1,6 +1,7 @@
 package dev.qi.torsionbalance.data
 
 import android.content.Context
+import dev.qi.torsionbalance.CaptureFrameMetadata
 import dev.qi.torsionbalance.SignSource
 import dev.qi.torsionbalance.TrackingResult
 import dev.qi.torsionbalance.vision.LedEdge
@@ -34,6 +35,7 @@ class ExperimentRecorder(private val context: Context) {
     private var lastGoodCaptureNs: Long = 0L
     private var lastLedOn: Boolean? = null
     private var triggerAccumulator = TriggerRunAccumulator()
+    private var lockWatch = CameraLockWatch()
 
     val isRecording: Boolean
         get() = synchronized(writerLock) { writer != null }
@@ -51,6 +53,7 @@ class ExperimentRecorder(private val context: Context) {
         experimentName: String,
         signMultiplier: Double = 1.0,
         signSource: SignSource = SignSource.SAVED,
+        camera: CaptureFrameMetadata? = null,
     ): File {
         synchronized(writerLock) {
             stopInternal(writeSummary = false)
@@ -65,10 +68,11 @@ class ExperimentRecorder(private val context: Context) {
             lastGoodCaptureNs = 0L
             lastLedOn = null
             triggerAccumulator = TriggerRunAccumulator()
+            lockWatch = CameraLockWatch(camera)
             lastFlushMs = System.currentTimeMillis()
             currentFile = file
             writer = BufferedWriter(FileWriter(file), 32 * 1024).also { w ->
-                ExperimentCsvFormat.metadataLines(signMultiplier, signSource).forEach { line ->
+                ExperimentCsvFormat.metadataLines(signMultiplier, signSource, camera).forEach { line ->
                     w.write(line)
                     w.newLine()
                 }
@@ -224,15 +228,38 @@ class ExperimentRecorder(private val context: Context) {
         }
     }
 
+    /**
+     * Check this frame's capture result for an AE / AWB lock that dropped since the run
+     * started; writes one event row per lock the first time it does.
+     */
+    fun noteCameraState(
+        timestampMs: Long,
+        frameIndex: Long,
+        camera: CaptureFrameMetadata?,
+    ) {
+        synchronized(writerLock) {
+            val w = writer ?: return
+            if (camera == null) return
+            val drops = lockWatch.onFrame(camera)
+            if (drops.isEmpty()) return
+            drops.forEach { drop ->
+                w.write(ExperimentCsvFormat.lockDropRow(timestampMs, drop, camera, frameIndex, lastLedOn))
+                w.newLine()
+            }
+            flushIfNeeded(force = true)
+        }
+    }
+
     fun writeSample(
         result: TrackingResult,
         timestampMs: Long,
         frameIndex: Long,
         ledOn: Boolean?,
+        camera: CaptureFrameMetadata? = null,
     ) {
         synchronized(writerLock) {
             val w = writer ?: return
-            w.write(ExperimentCsvFormat.sampleRow(timestampMs, result, frameIndex, ledOn))
+            w.write(ExperimentCsvFormat.sampleRow(timestampMs, result, frameIndex, ledOn, camera))
             w.newLine()
             sampleCount++
             flushIfNeeded()

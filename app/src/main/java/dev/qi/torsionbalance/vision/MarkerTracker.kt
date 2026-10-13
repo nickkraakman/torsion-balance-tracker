@@ -17,8 +17,10 @@ import kotlin.math.atan2
 /**
  * Dual-marker tracker: arm marker + fixed reference fiducial on chamber frame.
  *
- * Robustness: hysteresis (HELD vs LOST), ROI border reject, jump gate, adaptive area EMA,
- * circularity/contrast scoring, progressive ROI widen around last known position.
+ * Robustness: hysteresis (HELD vs LOST), ROI border reject, jump gate (never opened for the
+ * reference), adaptive area EMA, circularity/contrast scoring, progressive arm ROI widen
+ * around last known position, a slow contrast-based threshold per marker, and lighting-step
+ * events that hold the sample while thresholds re-learn.
  */
 class MarkerTracker(
     private val kalman: KalmanFilter1D = KalmanFilter1D(),
@@ -26,7 +28,14 @@ class MarkerTracker(
 ) {
     companion object {
         private const val GAUSSIAN_K = 3
+        /** Gap (px) between the blob edge and the background ring, to skip blurred edge pixels. */
+        private const val BG_RING_GAP = 2
+        private const val BG_RING_MIN_WIDTH = 4
     }
+
+    private val armThreshold = ContrastThreshold(config.threshold)
+    private val refThreshold = ContrastThreshold(config.threshold)
+    private val lighting = LightingStepDetector(config.lighting)
 
     private var armCenterX = 0f
     private var armCenterY = 0f
@@ -47,16 +56,29 @@ class MarkerTracker(
     private val hierarchy = Mat()
     private val mask = Mat()
     private val invMask = Mat()
+    /** Created on first use: the tracker is constructed before OpenCV is loaded. */
+    private var ringKernel: Mat? = null
 
     fun updateConfig(config: MarkerTrackLogic.Config) {
         this.config = config
+        armThreshold.updateParams(config.threshold)
+        refThreshold.updateParams(config.threshold)
+        lighting.updateParams(config.lighting)
     }
+
+    /** Learned binarization threshold for the arm marker (null until it has been seen). */
+    val armLearnedThreshold: Double?
+        get() = armThreshold.threshold
+
+    val refLearnedThreshold: Double?
+        get() = refThreshold.threshold
 
     fun seedArm(x: Float, y: Float, expectedArea: Double? = null) {
         armCenterX = x
         armCenterY = y
         armSeeded = true
         armLostFrames = 0
+        armThreshold.reset()
         if (expectedArea != null) expectedArmArea = expectedArea
     }
 
@@ -65,6 +87,7 @@ class MarkerTracker(
         refCenterY = y
         refSeeded = true
         refLostFrames = 0
+        refThreshold.reset()
         if (expectedArea != null) expectedRefArea = expectedArea
     }
 
@@ -82,6 +105,9 @@ class MarkerTracker(
         expectedRefArea = null
         armLostFrames = 0
         refLostFrames = 0
+        armThreshold.reset()
+        refThreshold.reset()
+        lighting.reset()
         kalman.reset(0.0)
     }
 
@@ -99,7 +125,14 @@ class MarkerTracker(
         blobAreaMax: Double,
         timestampMs: Long,
     ): TrackingResult {
+        val frameMean = Core.mean(gray).`val`[0]
+        // A sudden whole-frame brightness step: hold the sample, keep the gates tight, and
+        // re-learn each marker's threshold instead of counting misses toward LOST.
+        val lightingEvent = lighting.update(frameMean)
+
         val armDet = if (armSeeded) {
+            // Gates do not grow during a lighting event, even if the arm was already missing.
+            val gateMisses = if (lightingEvent) 0 else armLostFrames
             detectInRoi(
                 gray = gray,
                 centerX = armCenterX,
@@ -107,14 +140,32 @@ class MarkerTracker(
                 blobAreaMin = blobAreaMin,
                 blobAreaMax = blobAreaMax,
                 expectedArea = expectedArmArea,
-                missFrames = armLostFrames,
-                baseMaxJumpPx = config.armJumpMaxPx,
+                allowedJumpPx = MarkerTrackLogic.allowedJumpPx(
+                    baseMaxJumpPx = config.armJumpMaxPx,
+                    missFrames = gateMisses,
+                    lostThreshold = config.lostFrameThreshold,
+                    roiWidenPerMiss = config.roiWidenPerMiss,
+                ),
+                roiHalf = MarkerTrackLogic.roiHalfSize(
+                    missFrames = gateMisses,
+                    expectedArea = expectedArmArea,
+                    jumpGatePx = config.armJumpMaxPx,
+                    config = config,
+                ),
+                threshold = armThreshold,
+                relearn = lightingEvent,
             )
         } else {
             RoiDetectResult.idle()
         }
 
         val refDet = if (refSeeded) {
+            // The reference is fixed to the chamber: never open its gate or widen its ROI.
+            val refAllowed = MarkerTrackLogic.refAllowedJumpPx(
+                baseMaxJumpPx = config.refJumpMaxPx,
+                missFrames = refLostFrames,
+                searchMaxPx = config.refSearchMaxPx,
+            )
             detectInRoi(
                 gray = gray,
                 centerX = refCenterX,
@@ -122,8 +173,15 @@ class MarkerTracker(
                 blobAreaMin = blobAreaMin,
                 blobAreaMax = blobAreaMax,
                 expectedArea = expectedRefArea,
-                missFrames = refLostFrames,
-                baseMaxJumpPx = config.refJumpMaxPx,
+                allowedJumpPx = refAllowed,
+                roiHalf = MarkerTrackLogic.roiHalfSize(
+                    missFrames = 0,
+                    expectedArea = expectedRefArea,
+                    jumpGatePx = refAllowed,
+                    config = config,
+                ),
+                threshold = refThreshold,
+                relearn = lightingEvent,
             )
         } else {
             RoiDetectResult.idle()
@@ -133,12 +191,14 @@ class MarkerTracker(
             armCenterX = armDet.x
             armCenterY = armDet.y
             armLostFrames = 0
-            expectedArmArea = MarkerTrackLogic.updateExpectedAreaEma(
-                expectedArmArea,
-                armDet.area,
-                config.areaEmaAlpha,
-            )
-        } else if (armSeeded) {
+            if (!lightingEvent) {
+                expectedArmArea = MarkerTrackLogic.updateExpectedAreaEma(
+                    expectedArmArea,
+                    armDet.area,
+                    config.areaEmaAlpha,
+                )
+            }
+        } else if (armSeeded && !lightingEvent) {
             armLostFrames++
         }
 
@@ -146,16 +206,18 @@ class MarkerTracker(
             refCenterX = refDet.x
             refCenterY = refDet.y
             refLostFrames = 0
-            expectedRefArea = MarkerTrackLogic.updateExpectedAreaEma(
-                expectedRefArea,
-                refDet.area,
-                config.areaEmaAlpha,
-            )
-        } else if (refSeeded) {
+            if (!lightingEvent) {
+                expectedRefArea = MarkerTrackLogic.updateExpectedAreaEma(
+                    expectedRefArea,
+                    refDet.area,
+                    config.areaEmaAlpha,
+                )
+            }
+        } else if (refSeeded && !lightingEvent) {
             refLostFrames++
         }
 
-        val flags = MarkerTrackLogic.resolveFlags(
+        var flags = MarkerTrackLogic.resolveFlags(
             armSeeded = armSeeded,
             refSeeded = refSeeded,
             armFoundThisFrame = armDet.found,
@@ -164,9 +226,14 @@ class MarkerTracker(
             refMissStreak = refLostFrames,
             lostThreshold = config.lostFrameThreshold,
         )
+        if (lightingEvent && flags == TrackingFlags.OK) {
+            flags = TrackingFlags.HELD
+        }
 
-        val armIsHeld = armSeeded && !armDet.found && armLostFrames < config.lostFrameThreshold
-        val refIsHeld = refSeeded && !refDet.found && refLostFrames < config.lostFrameThreshold
+        val armIsHeld = armSeeded && (!armDet.found || lightingEvent) &&
+            armLostFrames < config.lostFrameThreshold
+        val refIsHeld = refSeeded && (!refDet.found || lightingEvent) &&
+            refLostFrames < config.lostFrameThreshold
 
         val arm = MarkerDetection(
             found = armDet.found,
@@ -228,6 +295,8 @@ class MarkerTracker(
                 refCandidateCount = refDet.candidateCount,
                 armMatchScore = armDet.matchScore,
                 refMatchScore = refDet.matchScore,
+                frameMeanLuma = frameMean,
+                lightingEvent = lightingEvent,
             ),
         )
     }
@@ -300,6 +369,11 @@ class MarkerTracker(
         return if (det.found) det.area else null
     }
 
+    /**
+     * Search one marker's ROI with its learned contrast threshold. Falls back to Otsu when
+     * nothing is learned yet, during a lighting event ([relearn]), or when the learned
+     * threshold misses; the latter two re-learn the threshold quickly from the hit.
+     */
     private fun detectInRoi(
         gray: Mat,
         centerX: Float,
@@ -307,36 +381,44 @@ class MarkerTracker(
         blobAreaMin: Double,
         blobAreaMax: Double,
         expectedArea: Double?,
-        missFrames: Int,
-        baseMaxJumpPx: Float,
+        allowedJumpPx: Float,
+        roiHalf: Int,
+        threshold: ContrastThreshold,
+        relearn: Boolean,
     ): RoiDetectResult {
-        val allowedJump = MarkerTrackLogic.allowedJumpPx(
-            baseMaxJumpPx = baseMaxJumpPx,
-            missFrames = missFrames,
-            lostThreshold = config.lostFrameThreshold,
-            roiWidenPerMiss = config.roiWidenPerMiss,
-        )
-        val half = MarkerTrackLogic.roiHalfSize(
-            missFrames = missFrames,
-            expectedArea = expectedArea,
-            jumpGatePx = baseMaxJumpPx,
-            config = config,
-        )
-        val roi = RoiMath.clampRoi(gray, centerX, centerY, half, half)
+        val roi = RoiMath.clampRoi(gray, centerX, centerY, roiHalf, roiHalf)
         if (roi.width <= 4 || roi.height <= 4) {
             return RoiDetectResult.idle()
         }
         val sub = Mat(gray, roi)
-        val local = runBlobSearch(
-            roiGray = sub,
-            blobAreaMin = blobAreaMin,
-            blobAreaMax = blobAreaMax,
-            preferX = centerX - roi.x,
-            preferY = centerY - roi.y,
-            expectedArea = expectedArea,
-            allowedJumpPx = allowedJump,
-        )
+        val search = { fixed: Double? ->
+            runBlobSearch(
+                roiGray = sub,
+                blobAreaMin = blobAreaMin,
+                blobAreaMax = blobAreaMax,
+                preferX = centerX - roi.x,
+                preferY = centerY - roi.y,
+                expectedArea = expectedArea,
+                allowedJumpPx = allowedJumpPx,
+                fixedThreshold = fixed,
+            )
+        }
+        val learned = if (relearn) null else threshold.threshold
+        var local = search(learned)
+        var fastLearn = relearn
+        if (!local.found && learned != null) {
+            val otsu = search(null)
+            if (otsu.found) {
+                local = otsu
+                fastLearn = true
+            }
+        }
         sub.release()
+        val blobMean = local.blobMean
+        val backgroundMean = local.backgroundMean
+        if (local.found && blobMean != null && backgroundMean != null) {
+            threshold.update(blobMean, backgroundMean, fast = fastLearn)
+        }
         return if (local.found) {
             local.copy(x = roi.x + local.x, y = roi.y + local.y)
         } else {
@@ -351,8 +433,13 @@ class MarkerTracker(
         val area: Double,
         val matchScore: Double?,
         val threshold: Double?,
+        /** Local background luma around the accepted blob; ROI mean on a miss. */
         val roiMean: Double?,
         val candidateCount: Int,
+        /** Mean luma inside the accepted blob (null on a miss). */
+        val blobMean: Double? = null,
+        /** Mean luma of the ring around the accepted blob (null on a miss). */
+        val backgroundMean: Double? = null,
     ) {
         companion object {
             fun idle() = RoiDetectResult(
@@ -368,7 +455,10 @@ class MarkerTracker(
         }
     }
 
-    /** Visible for JVM unit tests (synthetic images). */
+    /**
+     * Visible for JVM unit tests (synthetic images). Binarizes at [fixedThreshold] when
+     * given, otherwise with Otsu.
+     */
     internal fun runBlobSearch(
         roiGray: Mat,
         blobAreaMin: Double,
@@ -377,6 +467,7 @@ class MarkerTracker(
         preferY: Float,
         expectedArea: Double?,
         allowedJumpPx: Float,
+        fixedThreshold: Double? = null,
     ): RoiDetectResult {
         Imgproc.GaussianBlur(
             roiGray,
@@ -384,13 +475,18 @@ class MarkerTracker(
             org.opencv.core.Size(GAUSSIAN_K.toDouble(), GAUSSIAN_K.toDouble()),
             0.0,
         )
-        val otsu = Imgproc.threshold(
-            blurred,
-            binary,
-            0.0,
-            255.0,
-            Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU,
-        )
+        val usedThreshold = if (fixedThreshold != null) {
+            Imgproc.threshold(blurred, binary, fixedThreshold, 255.0, Imgproc.THRESH_BINARY_INV)
+            fixedThreshold
+        } else {
+            Imgproc.threshold(
+                blurred,
+                binary,
+                0.0,
+                255.0,
+                Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU,
+            )
+        }
         val roiMean = Core.mean(roiGray).`val`[0]
 
         val contours = ArrayList<MatOfPoint>()
@@ -489,9 +585,11 @@ class MarkerTracker(
                     y = best.candidate.cy,
                     area = best.candidate.area,
                     matchScore = best.score,
-                    threshold = otsu,
+                    threshold = usedThreshold,
                     roiMean = best.candidate.backgroundMean.takeIf { it.isFinite() } ?: roiMean,
                     candidateCount = pending.size,
+                    blobMean = best.candidate.meanLuma.takeIf { it.isFinite() },
+                    backgroundMean = best.candidate.backgroundMean.takeIf { it.isFinite() },
                 )
             } else {
                 RoiDetectResult(
@@ -500,7 +598,7 @@ class MarkerTracker(
                     y = preferY,
                     area = 0.0,
                     matchScore = null,
-                    threshold = otsu,
+                    threshold = usedThreshold,
                     roiMean = roiMean,
                     candidateCount = pending.size,
                 )
@@ -516,8 +614,9 @@ class MarkerTracker(
     }
 
     /**
-     * Blob mean over the filled contour; background mean over the ROI excluding the contour
-     * (falls back to a bbox-exterior estimate if the exterior is empty).
+     * Blob mean over the filled contour; local background mean over a ring around it
+     * (blob grown by [BG_RING_GAP] px, out to about one blob radius beyond that). Falls back
+     * to the ROI excluding the contour, then to a bbox-exterior estimate.
      */
     private fun meansForContour(
         roiGray: Mat,
@@ -528,6 +627,8 @@ class MarkerTracker(
         mask.setTo(Scalar(0.0))
         Imgproc.drawContours(mask, listOf(contour), 0, Scalar(255.0), Imgproc.FILLED)
         val blobMean = Core.mean(roiGray, mask).`val`[0]
+
+        localRingMean(roiGray, geometry)?.let { return blobMean to it }
 
         Core.bitwise_not(mask, invMask)
         val bg = Core.mean(roiGray, invMask)
@@ -553,11 +654,42 @@ class MarkerTracker(
         return blobMean to backgroundMean
     }
 
+    /** Mean of the ring around the blob in [mask]; null if the ring has no pixels. Uses [invMask]. */
+    private fun localRingMean(roiGray: Mat, geometry: MarkerTrackLogic.BlobCandidate): Double? {
+        val kernel = ringKernel ?: Imgproc.getStructuringElement(
+            Imgproc.MORPH_ELLIPSE,
+            org.opencv.core.Size((2 * BG_RING_GAP + 1).toDouble(), (2 * BG_RING_GAP + 1).toDouble()),
+        ).also { ringKernel = it }
+        Imgproc.dilate(mask, invMask, kernel)
+        Core.bitwise_not(invMask, invMask)
+        val extent = maxOf(
+            geometry.bboxRight - geometry.bboxLeft,
+            geometry.bboxBottom - geometry.bboxTop,
+        )
+        val pad = BG_RING_GAP + maxOf(BG_RING_MIN_WIDTH, (extent + 1) / 2)
+        val x0 = (geometry.bboxLeft - pad).coerceAtLeast(0)
+        val y0 = (geometry.bboxTop - pad).coerceAtLeast(0)
+        val x1 = (geometry.bboxRight + pad).coerceAtMost(roiGray.cols())
+        val y1 = (geometry.bboxBottom + pad).coerceAtMost(roiGray.rows())
+        if (x1 <= x0 || y1 <= y0) return null
+        val window = Rect(x0, y0, x1 - x0, y1 - y0)
+        val grayWin = Mat(roiGray, window)
+        val ringWin = Mat(invMask, window)
+        return try {
+            if (Core.countNonZero(ringWin) == 0) null else Core.mean(grayWin, ringWin).`val`[0]
+        } finally {
+            grayWin.release()
+            ringWin.release()
+        }
+    }
+
     fun release() {
         binary.release()
         blurred.release()
         hierarchy.release()
         mask.release()
         invMask.release()
+        ringKernel?.release()
+        ringKernel = null
     }
 }
