@@ -217,17 +217,32 @@ class MarkerTrackLogicTest {
     }
 
     @Test
-    fun refJumpGate_doesNotOpenFullyAfterOneMiss() {
-        val distractor = circleCandidate(80f, 50f, 5.0) // 30 px away
-        val allowed0 = MarkerTrackLogic.allowedJumpPx(3f, 0, 10, 20)
-        val allowed1 = MarkerTrackLogic.allowedJumpPx(3f, 1, 10, 20)
-        assertEquals(3f, allowed0, 0f)
-        assertEquals(23f, allowed1, 0f) // 3 + 20 — still < 30
-        assertNull(
+    fun refJumpGate_neverOpensEvenWhenLost() {
+        val distractor = circleCandidate(85f, 50f, 5.0) // 35 px away
+        val lostThreshold = 10
+        assertEquals(3f, MarkerTrackLogic.refAllowedJumpPx(3f, 0, searchMaxPx = 6f), 0f)
+        for (miss in listOf(1, 5, lostThreshold, lostThreshold * 100)) {
+            val allowed = MarkerTrackLogic.refAllowedJumpPx(3f, miss, searchMaxPx = 6f)
+            assertEquals("miss=$miss", 6f, allowed, 0f)
+            assertNull(
+                MarkerTrackLogic.pickBest(
+                    listOf(distractor), 50f, 50f, distractor.area, 200, 100, allowed,
+                ),
+            )
+        }
+        // A marker a few px from its last position is still re-found.
+        val nearby = circleCandidate(54f, 51f, 5.0)
+        assertNotNull(
             MarkerTrackLogic.pickBest(
-                listOf(distractor), 50f, 50f, distractor.area, 200, 100, allowed1,
+                listOf(nearby), 50f, 50f, nearby.area, 200, 100,
+                MarkerTrackLogic.refAllowedJumpPx(3f, lostThreshold, searchMaxPx = 6f),
             ),
         )
+    }
+
+    @Test
+    fun refSearchRadiusIsAtLeastTheConfiguredJump() {
+        assertEquals(10f, MarkerTrackLogic.refAllowedJumpPx(10f, 3, searchMaxPx = 6f), 0f)
     }
 
     @Test

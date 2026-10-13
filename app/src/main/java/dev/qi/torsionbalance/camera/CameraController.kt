@@ -25,6 +25,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import dev.qi.torsionbalance.CaptureFrameMetadata
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -86,6 +87,14 @@ class CameraController(
 
     private val focusSamples = mutableListOf<Float>()
 
+    private val captureMetadata = CaptureMetadataBuffer()
+
+    /**
+     * Exposure, ISO and AE/AWB lock state the frame with sensor timestamp [timestampNs]
+     * (`ImageProxy.imageInfo.timestamp`) was captured with; null if no result matched.
+     */
+    fun captureMetadataFor(timestampNs: Long): CaptureFrameMetadata? = captureMetadata.lookup(timestampNs)
+
     private val focusCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(
             session: CameraCaptureSession,
@@ -95,6 +104,18 @@ class CameraController(
             result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (it > 0L) latestExposureTimeNs = it }
             result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (it > 0) latestSensitivity = it }
             result.get(CaptureResult.SENSOR_FRAME_DURATION)?.let { if (it > 0L) latestFrameDurationNs = it }
+            result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { sensorTs ->
+                captureMetadata.put(
+                    CaptureFrameMetadata(
+                        sensorTimestampNs = sensorTs,
+                        exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                        iso = result.get(CaptureResult.SENSOR_SENSITIVITY),
+                        aeMode = result.get(CaptureResult.CONTROL_AE_MODE),
+                        aeLock = result.get(CaptureResult.CONTROL_AE_LOCK),
+                        awbLock = result.get(CaptureResult.CONTROL_AWB_LOCK),
+                    ),
+                )
+            }
             if (!samplingFocus) return
             val dist = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
             if (dist != null && dist.isFinite() && dist > 0f) {

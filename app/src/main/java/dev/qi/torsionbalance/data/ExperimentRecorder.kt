@@ -1,6 +1,7 @@
 package dev.qi.torsionbalance.data
 
 import android.content.Context
+import dev.qi.torsionbalance.CaptureFrameMetadata
 import dev.qi.torsionbalance.SignSource
 import dev.qi.torsionbalance.TrackingResult
 import dev.qi.torsionbalance.vision.LedEdge
@@ -229,10 +230,11 @@ class ExperimentRecorder(private val context: Context) {
         timestampMs: Long,
         frameIndex: Long,
         ledOn: Boolean?,
+        camera: CaptureFrameMetadata? = null,
     ) {
         synchronized(writerLock) {
             val w = writer ?: return
-            w.write(ExperimentCsvFormat.sampleRow(timestampMs, result, frameIndex, ledOn))
+            w.write(ExperimentCsvFormat.sampleRow(timestampMs, result, frameIndex, ledOn, camera))
             w.newLine()
             sampleCount++
             flushIfNeeded()

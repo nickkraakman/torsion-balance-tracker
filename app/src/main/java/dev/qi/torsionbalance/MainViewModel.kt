@@ -251,7 +251,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             // LED state must be on every processed frame; sample-rate thinning would drop edges.
             if (ledLogging || shouldEmitSample(timestampMs)) {
-                recorder.writeSample(result, timestampMs, frameIndex, ledOn)
+                recorder.writeSample(
+                    result,
+                    timestampMs,
+                    frameIndex,
+                    ledOn,
+                    cameraController.captureMetadataFor(captureNs),
+                )
                 _recordingSampleCount.update { it + 1 }
             }
             _recordingElapsedMs.value = timestampMs
