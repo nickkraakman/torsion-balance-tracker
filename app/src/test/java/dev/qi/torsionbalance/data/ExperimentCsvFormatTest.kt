@@ -1,5 +1,6 @@
 package dev.qi.torsionbalance.data
 
+import dev.qi.torsionbalance.CaptureFrameMetadata
 import dev.qi.torsionbalance.MarkerDetection
 import dev.qi.torsionbalance.MarkerDiagnostics
 import dev.qi.torsionbalance.SignSource
@@ -13,7 +14,8 @@ import org.junit.Test
 class ExperimentCsvFormatTest {
 
     @Test
-    fun headerHasTwentyThreeColumns() {
+    fun headerHasTwentySevenColumns() {
+        assertEquals(27, ExperimentCsvFormat.COLUMN_COUNT)
         assertEquals(ExperimentCsvFormat.COLUMN_COUNT, ExperimentCsvFormat.HEADER.split(",").size)
         assertTrue(ExperimentCsvFormat.HEADER.contains("arm_blob_area"))
         assertTrue(ExperimentCsvFormat.HEADER.contains("ref_match_score"))
@@ -27,7 +29,7 @@ class ExperimentCsvFormatTest {
     @Test
     fun metadataLines_recordSignAndSourceWithoutCommas() {
         val lines = ExperimentCsvFormat.metadataLines(-1.0, SignSource.SAVED)
-        assertEquals(2, lines.size)
+        assertEquals(5, lines.size)
         assertEquals("# sign_multiplier=-1", lines[0])
         assertEquals("# sign_source=saved", lines[1])
         lines.forEach { line ->
@@ -40,11 +42,41 @@ class ExperimentCsvFormatTest {
     fun metadataLines_manualAndNudgedSources() {
         assertEquals(
             listOf("# sign_multiplier=+1", "# sign_source=manual"),
-            ExperimentCsvFormat.metadataLines(1.0, SignSource.MANUAL),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.MANUAL).take(2),
         )
         assertEquals(
             listOf("# sign_multiplier=+1", "# sign_source=nudged"),
-            ExperimentCsvFormat.metadataLines(1.0, SignSource.NUDGED),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.NUDGED).take(2),
+        )
+    }
+
+    @Test
+    fun metadataLines_recordAeModeAndLocksFromStartCapture() {
+        val lines = ExperimentCsvFormat.metadataLines(
+            1.0,
+            SignSource.SAVED,
+            CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 0, aeLock = false, awbLock = true),
+        )
+        assertEquals(
+            listOf("# ae_mode=off", "# ae_lock=0", "# awb_lock=1"),
+            lines.drop(2),
+        )
+        lines.forEach { assertFalse(it.contains(",")) }
+    }
+
+    @Test
+    fun metadataLines_unknownCameraStateWithoutCapture() {
+        assertEquals(
+            listOf("# ae_mode=unknown", "# ae_lock=unknown", "# awb_lock=unknown"),
+            ExperimentCsvFormat.metadataLines(1.0, SignSource.SAVED).drop(2),
+        )
+        assertEquals(
+            listOf("# ae_mode=on", "# ae_lock=unknown", "# awb_lock=unknown"),
+            ExperimentCsvFormat.metadataLines(
+                1.0,
+                SignSource.SAVED,
+                CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 1),
+            ).drop(2),
         )
     }
 
@@ -90,7 +122,7 @@ class ExperimentCsvFormatTest {
             ledOn = true,
         )
         val cols = row.split(",")
-        assertEquals(23, cols.size)
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
         assertEquals("sample", cols[1])
         assertEquals("OK", cols[9])
         assertEquals("", cols[10])
@@ -140,6 +172,115 @@ class ExperimentCsvFormatTest {
         assertEquals("90", cols[11])
         assertEquals("0", cols[12])
     }
+
+    @Test
+    fun cameraAndLightingColumnsAreAppendedAfterLegacyColumns() {
+        val legacy = "timestamp_ms,kind,displacement_mm_raw,displacement_mm_filt,angle_rad," +
+            "x_arm_px,y_arm_px,x_ref_px,y_ref_px,flags,note,frame_index,led_on," +
+            "arm_blob_area,ref_blob_area,arm_threshold,ref_threshold," +
+            "arm_roi_mean,ref_roi_mean,arm_candidates,ref_candidates," +
+            "arm_match_score,ref_match_score"
+        // Older parsers that index the first 23 columns keep working.
+        assertTrue(ExperimentCsvFormat.HEADER.startsWith("$legacy,"))
+        assertEquals(
+            listOf("exposure_time_ns", "iso", "frame_mean", "lighting_event"),
+            ExperimentCsvFormat.HEADER.removePrefix("$legacy,").split(","),
+        )
+    }
+
+    @Test
+    fun sampleRowWritesPerFrameCameraStateAndLighting() {
+        val row = ExperimentCsvFormat.sampleRow(
+            timestampMs = 100,
+            result = heldResult(
+                MarkerDiagnostics(frameMeanLuma = 72.25, lightingEvent = true),
+            ),
+            frameIndex = 3,
+            ledOn = null,
+            camera = CaptureFrameMetadata(
+                sensorTimestampNs = 123L,
+                exposureTimeNs = 16_666_666L,
+                iso = 400,
+                aeMode = 0,
+                aeLock = false,
+                awbLock = true,
+            ),
+        )
+        val cols = row.split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
+        val header = ExperimentCsvFormat.HEADER.split(",")
+        fun col(name: String) = cols[header.indexOf(name)]
+        assertEquals("16666666", col("exposure_time_ns"))
+        assertEquals("400", col("iso"))
+        assertEquals("72.25000", col("frame_mean"))
+        assertEquals("1", col("lighting_event"))
+        assertEquals("HELD", col("flags"))
+    }
+
+    @Test
+    fun sampleRowWithoutCameraMetadataLeavesCameraCellsEmpty() {
+        val row = ExperimentCsvFormat.sampleRow(
+            timestampMs = 100,
+            result = heldResult(MarkerDiagnostics(frameMeanLuma = 50.0)),
+            frameIndex = 3,
+            ledOn = null,
+        )
+        val cols = row.split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
+        assertEquals(listOf("", ""), cols.subList(23, 25))
+        assertEquals("50.00000", cols[25])
+        assertEquals("0", cols[26])
+    }
+
+    @Test
+    fun eventRowLeavesAllTrailingCellsEmpty() {
+        val cols = ExperimentCsvFormat.eventRow(10, "SYNC", "mark_1", 1, true).split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, cols.size)
+        assertEquals("1", cols[12])
+        assertTrue(cols.drop(13).all { it.isEmpty() })
+    }
+
+    @Test
+    fun lockDropRowsAreEventRowsWithCommaFreeNotes() {
+        val camera = CaptureFrameMetadata(sensorTimestampNs = 1L, aeMode = 1, aeLock = false, awbLock = false)
+        val ae = ExperimentCsvFormat.lockDropRow(500, CameraLockDrop.AE, camera, 15, null).split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, ae.size)
+        assertEquals("event", ae[1])
+        assertEquals("AE_UNLOCKED", ae[9])
+        assertEquals("ae_mode=on ae_lock=0", ae[10])
+        assertEquals("15", ae[11])
+        assertTrue(ae.drop(13).all { it.isEmpty() })
+
+        val awb = ExperimentCsvFormat.lockDropRow(500, CameraLockDrop.AWB, camera, 15, true).split(",")
+        assertEquals(ExperimentCsvFormat.COLUMN_COUNT, awb.size)
+        assertEquals("AWB_UNLOCKED", awb[9])
+        assertEquals("awb_lock=0", awb[10])
+        assertEquals("1", awb[12])
+    }
+
+    @Test
+    fun aeModeNamesAreCommaFree() {
+        assertEquals("off", ExperimentCsvFormat.aeModeName(0))
+        assertEquals("on", ExperimentCsvFormat.aeModeName(1))
+        assertEquals("on_auto_flash", ExperimentCsvFormat.aeModeName(2))
+        assertEquals("42", ExperimentCsvFormat.aeModeName(42))
+    }
+
+    private fun heldResult(diagnostics: MarkerDiagnostics) = TrackingResult(
+        frameIndex = 3,
+        timestampMs = 100,
+        arm = MarkerDetection(found = true, x = 10f, y = 20f, held = true),
+        reference = MarkerDetection(found = true, x = 30f, y = 40f, held = true),
+        xRelPx = null,
+        yRelPx = null,
+        displacementMmRaw = null,
+        displacementMmFilt = null,
+        angleRad = null,
+        flags = TrackingFlags.HELD,
+        imageWidth = 1280,
+        imageHeight = 720,
+        diagnostics = diagnostics,
+    )
 
     @Test
     fun ledSummaryNoteHasNoCommas() {

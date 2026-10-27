@@ -18,6 +18,8 @@ object MarkerTrackLogic {
     const val DEFAULT_LOST_FRAME_THRESHOLD = 10
     const val DEFAULT_ARM_JUMP_MAX_PX = 20f
     const val DEFAULT_REF_JUMP_MAX_PX = 3f
+    /** The reference is fixed: after a miss it is re-searched only this close to its last position. */
+    const val DEFAULT_REF_SEARCH_MAX_PX = 6f
     const val DEFAULT_AREA_TOLERANCE = 0.60
     const val DEFAULT_AREA_EMA_ALPHA = 0.05
     const val DEFAULT_ROI_HALF_INITIAL = 60
@@ -38,6 +40,7 @@ object MarkerTrackLogic {
         val lostFrameThreshold: Int = DEFAULT_LOST_FRAME_THRESHOLD,
         val armJumpMaxPx: Float = DEFAULT_ARM_JUMP_MAX_PX,
         val refJumpMaxPx: Float = DEFAULT_REF_JUMP_MAX_PX,
+        val refSearchMaxPx: Float = DEFAULT_REF_SEARCH_MAX_PX,
         val areaTolerance: Double = DEFAULT_AREA_TOLERANCE,
         val areaEmaAlpha: Double = DEFAULT_AREA_EMA_ALPHA,
         val roiHalfInitial: Int = DEFAULT_ROI_HALF_INITIAL,
@@ -45,6 +48,8 @@ object MarkerTrackLogic {
         val roiWidenPerMiss: Int = DEFAULT_ROI_WIDEN_PER_MISS,
         val minCircularity: Double = DEFAULT_MIN_CIRCULARITY,
         val minContrast: Double = DEFAULT_MIN_CONTRAST,
+        val threshold: ContrastThreshold.Params = ContrastThreshold.Params(),
+        val lighting: LightingStepDetector.Params = LightingStepDetector.Params(),
     )
 
     data class BlobCandidate(
@@ -143,9 +148,9 @@ object MarkerTrackLogic {
     }
 
     /**
-     * Allowed jump grows with the miss streak during HELD:
+     * Arm jump gate. Allowed jump grows with the miss streak during HELD:
      * `baseMax + missFrames * roiWidenPerMiss`. The gate is dropped only once
-     * [missFrames] reaches [lostThreshold] (LOST).
+     * [missFrames] reaches [lostThreshold] (LOST). The reference uses [refAllowedJumpPx].
      */
     fun allowedJumpPx(
         baseMaxJumpPx: Float,
@@ -156,6 +161,19 @@ object MarkerTrackLogic {
         if (missFrames <= 0) return baseMaxJumpPx
         if (missFrames >= lostThreshold) return Float.MAX_VALUE
         return baseMaxJumpPx + missFrames * roiWidenPerMiss
+    }
+
+    /**
+     * Jump gate for the fixed reference fiducial. Unlike the arm gate it never opens:
+     * after any miss (including LOST) the search radius is `max(base, searchMax)` px.
+     */
+    fun refAllowedJumpPx(
+        baseMaxJumpPx: Float,
+        missFrames: Int,
+        searchMaxPx: Float = DEFAULT_REF_SEARCH_MAX_PX,
+    ): Float {
+        if (missFrames <= 0) return baseMaxJumpPx
+        return max(baseMaxJumpPx, searchMaxPx)
     }
 
     fun jumpAccepted(jumpPx: Double, allowedJumpPx: Float): Boolean {

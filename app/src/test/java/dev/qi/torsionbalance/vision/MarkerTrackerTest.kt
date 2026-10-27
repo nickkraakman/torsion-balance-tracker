@@ -9,6 +9,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Test
+import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Point
@@ -166,6 +167,148 @@ class MarkerTrackerTest {
         assertEquals(60f, result.x, 6f)
     }
 
+    /**
+     * Fix (d): the reference is fixed, so a LOST reference must not re-lock onto a blob
+     * 35 px away (the old open gate did), but must be re-found a few px from its last spot.
+     */
+    @Test
+    fun referenceLost_neverRelocksOnDistantBlob_butRecoversNearby() {
+        tracker.seedArm(400f, 200f, expectedArea = 200.0)
+        tracker.seedReference(200f, 200f, expectedArea = 200.0)
+        assertEquals(TrackingFlags.OK, process(brightFrameWithDots(400.0, 200.0, 200.0, 200.0)).flags)
+
+        val distractorOnly = brightFrame()
+        Imgproc.circle(distractorOnly, Point(400.0, 200.0), 8, Scalar(20.0), -1)
+        Imgproc.circle(distractorOnly, Point(235.0, 200.0), 8, Scalar(20.0), -1)
+        var last = process(distractorOnly)
+        repeat(30) {
+            last = process(distractorOnly)
+            assertFalse("frame=$it", last.reference.found)
+            assertEquals(200f, last.reference.x, 0.5f)
+        }
+        assertEquals(TrackingFlags.REF_LOST, last.flags)
+
+        val back = process(brightFrameWithDots(400.0, 200.0, 203.0, 200.0))
+        assertTrue(back.reference.found)
+        assertEquals(203f, back.reference.x, 0.5f)
+        assertEquals(TrackingFlags.OK, back.flags)
+    }
+
+    /**
+     * Fix (e): a sudden whole-frame dimming with the dots unreadable for longer than the
+     * LOST threshold is a lighting event — rows are HELD (never LOST), gates stay tight, and
+     * the threshold re-learns before OK resumes.
+     */
+    @Test
+    fun lightingStep_isHeldNotLost_andThresholdRelearns() {
+        tracker.seedArm(400f, 200f, expectedArea = 200.0)
+        tracker.seedReference(200f, 200f, expectedArea = 200.0)
+        repeat(30) {
+            assertEquals(TrackingFlags.OK, process(frameWithDots(bg = 200.0, dot = 30.0)).flags)
+        }
+        val before = tracker.armLearnedThreshold!!
+        assertEquals(115.0, before, 10.0)
+
+        val results = mutableListOf<dev.qi.torsionbalance.TrackingResult>()
+        // Flickering transition with no readable dots, longer than lostFrameThreshold (10).
+        repeat(14) { i -> results += process(brightFrame(bg = if (i % 2 == 0) 100.0 else 110.0)) }
+        repeat(25) { results += process(frameWithDots(bg = 100.0, dot = 15.0)) }
+
+        val lostFlags = setOf(TrackingFlags.ARM_LOST, TrackingFlags.REF_LOST, TrackingFlags.BOTH_LOST)
+        results.forEachIndexed { i, r -> assertFalse("frame=$i flags=${r.flags}", r.flags in lostFlags) }
+        results.take(14).forEach { r ->
+            assertEquals(TrackingFlags.HELD, r.flags)
+            assertTrue(r.diagnostics.lightingEvent)
+            assertEquals(null, r.displacementMmRaw)
+        }
+        val firstOk = results.indexOfFirst { it.flags == TrackingFlags.OK }
+        assertTrue("never recovered", firstOk > 14)
+        assertTrue(results.subList(firstOk, results.size).all { it.flags == TrackingFlags.OK })
+        assertTrue(results.subList(14, firstOk).all { it.diagnostics.lightingEvent })
+        val end = results.last()
+        assertEquals(400f, end.arm.x, 0.5f)
+        assertEquals(200f, end.reference.x, 0.5f)
+        assertEquals(57.5, tracker.armLearnedThreshold!!, 10.0)
+    }
+
+    /** A learned threshold that no longer separates the dot falls back to Otsu and re-learns. */
+    @Test
+    fun learnedThresholdMiss_fallsBackToOtsuAndRelearns() {
+        tracker.seedArm(400f, 200f, expectedArea = 200.0)
+        tracker.seedReference(200f, 200f, expectedArea = 200.0)
+        repeat(20) { process(frameWithDots(bg = 220.0, dot = 20.0)) }
+        assertEquals(120.0, tracker.armLearnedThreshold!!, 10.0)
+
+        // Dots fade to 160 (below the old threshold of ~120 nothing is foreground).
+        repeat(5) {
+            val r = process(frameWithDots(bg = 220.0, dot = 160.0))
+            assertEquals("frame=$it", TrackingFlags.OK, r.flags)
+            assertFalse(r.diagnostics.lightingEvent)
+        }
+        assertTrue(tracker.armLearnedThreshold!! > 160.0)
+    }
+
+    /** Fix (f): pixel noise must not change the binarization threshold frame to frame. */
+    @Test
+    fun noisyLowContrastScene_thresholdConstantAfterWarmup() {
+        tracker.seedArm(400f, 200f, expectedArea = 200.0)
+        tracker.seedReference(200f, 200f, expectedArea = 200.0)
+        val armThresholds = mutableListOf<Double>()
+        val refThresholds = mutableListOf<Double>()
+        for (i in 0 until 80) {
+            val r = process(noisyFrameWithDots(bg = 50.0, dot = 20.0, sigma = 2.5, seed = i))
+            assertEquals("frame=$i", TrackingFlags.OK, r.flags)
+            if (i >= 20) {
+                armThresholds += r.diagnostics.armThreshold!!
+                refThresholds += r.diagnostics.refThreshold!!
+            }
+        }
+        assertEquals(armThresholds.toString(), 1, armThresholds.distinct().size)
+        assertEquals(refThresholds.toString(), 1, refThresholds.distinct().size)
+        assertEquals(35.0, armThresholds.first(), 3.0)
+    }
+
+    @Test
+    fun runBlobSearch_backgroundIsLocalRingNotWholeRoi() {
+        val roi = Mat(120, 120, CvType.CV_8UC1, Scalar(220.0))
+        mats += roi
+        Imgproc.circle(roi, Point(60.0, 60.0), 8, Scalar(20.0), -1)
+        // Large dark structure elsewhere in the ROI (e.g. the beam).
+        Imgproc.rectangle(roi, Point(85.0, 10.0), Point(110.0, 110.0), Scalar(10.0), -1)
+
+        val result = tracker.runBlobSearch(
+            roiGray = roi,
+            blobAreaMin = 20.0,
+            blobAreaMax = 8000.0,
+            preferX = 60f,
+            preferY = 60f,
+            expectedArea = 200.0,
+            allowedJumpPx = 20f,
+        )
+        assertTrue(result.found)
+        assertEquals(220.0, result.backgroundMean!!, 1.0)
+        assertEquals(20.0, result.blobMean!!, 5.0)
+    }
+
+    @Test
+    fun runBlobSearch_usesFixedThresholdWhenGiven() {
+        val roi = Mat(120, 120, CvType.CV_8UC1, Scalar(220.0))
+        mats += roi
+        Imgproc.circle(roi, Point(60.0, 60.0), 8, Scalar(20.0), -1)
+        val result = tracker.runBlobSearch(
+            roiGray = roi,
+            blobAreaMin = 20.0,
+            blobAreaMax = 8000.0,
+            preferX = 60f,
+            preferY = 60f,
+            expectedArea = 200.0,
+            allowedJumpPx = 20f,
+            fixedThreshold = 100.0,
+        )
+        assertTrue(result.found)
+        assertEquals(100.0, result.threshold!!, 0.0)
+    }
+
     private fun process(gray: Mat) = tracker.processFrame(
         gray = gray,
         mmPerPixel = 0.1,
@@ -194,6 +337,29 @@ class MarkerTrackerTest {
         Imgproc.circle(m, Point(armX, armY), radius, Scalar(20.0), -1)
         Imgproc.circle(m, Point(refX, refY), radius, Scalar(20.0), -1)
         return m
+    }
+
+    private fun frameWithDots(bg: Double, dot: Double): Mat {
+        val m = brightFrame(bg)
+        Imgproc.circle(m, Point(400.0, 200.0), 8, Scalar(dot), -1)
+        Imgproc.circle(m, Point(200.0, 200.0), 8, Scalar(dot), -1)
+        return m
+    }
+
+    private fun noisyFrameWithDots(bg: Double, dot: Double, sigma: Double, seed: Int): Mat {
+        val base = Mat(360, 640, CvType.CV_32FC1, Scalar(bg))
+        Imgproc.circle(base, Point(400.0, 200.0), 8, Scalar(dot), -1)
+        Imgproc.circle(base, Point(200.0, 200.0), 8, Scalar(dot), -1)
+        val noise = Mat(360, 640, CvType.CV_32FC1)
+        Core.setRNGSeed(seed)
+        Core.randn(noise, 0.0, sigma)
+        Core.add(base, noise, base)
+        val out = Mat()
+        base.convertTo(out, CvType.CV_8UC1)
+        base.release()
+        noise.release()
+        mats += out
+        return out
     }
 
     companion object {

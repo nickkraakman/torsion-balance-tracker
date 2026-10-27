@@ -15,6 +15,11 @@ enum class AppMode {
     LIVE,
     CALIBRATE,
     RECORDING,
+    ;
+
+    /** FLAG_KEEP_SCREEN_ON while recording, so the display timeout cannot dim the scene. */
+    val keepsScreenOn: Boolean
+        get() = this == RECORDING
 }
 
 enum class CalibrationStep {
@@ -100,6 +105,24 @@ data class MarkerDiagnostics(
     val refCandidateCount: Int = 0,
     val armMatchScore: Double? = null,
     val refMatchScore: Double? = null,
+    /** Mean luma of the whole analysis frame. */
+    val frameMeanLuma: Double? = null,
+    /** True while a sudden whole-frame brightness step is settling (row is HELD). */
+    val lightingEvent: Boolean = false,
+)
+
+/**
+ * Camera2 capture-result values for one analysis frame, matched by sensor timestamp.
+ * Null fields mean the device did not report that key.
+ */
+data class CaptureFrameMetadata(
+    val sensorTimestampNs: Long,
+    val exposureTimeNs: Long? = null,
+    val iso: Int? = null,
+    /** Raw `CONTROL_AE_MODE`; 0 (OFF) means manual exposure, i.e. exposure and ISO are fixed. */
+    val aeMode: Int? = null,
+    val aeLock: Boolean? = null,
+    val awbLock: Boolean? = null,
 )
 
 data class TrackingResult(

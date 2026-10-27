@@ -286,6 +286,7 @@ fun DisplacementReadout(
             !isCalibrated -> "--- mm"
             tr == null -> "--- mm"
             lost -> "LOST"
+            held && tr.diagnostics.lightingEvent -> "HELD (lighting)"
             held -> "HELD"
             disp != null -> formatDisplacementMm(disp)
             else -> "--- mm"
